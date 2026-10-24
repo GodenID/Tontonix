@@ -1,0 +1,6 @@
+data/
+.shots/
+node_modules/
+.env
+*.log
+AGENTS.md
