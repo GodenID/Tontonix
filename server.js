@@ -192,14 +192,36 @@ async function proxyStream(req, res, url) {
   };
   if (req.headers.range) headers.range = req.headers.range;
 
+  // Idle timeout instead of a total one: a long segment must not be killed just
+  // because the CDN is slow, but a dead connection still has to be dropped.
+  const controller = new AbortController();
+  let idle = setTimeout(() => controller.abort(), 20000);
+  const touch = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(), 20000);
+  };
+  const cleanup = () => clearTimeout(idle);
+  res.on("close", () => {
+    cleanup();
+    controller.abort();
+  });
+
   let upstream;
   try {
-    upstream = await fetch(target.toString(), { headers, redirect: "follow", signal: AbortSignal.timeout(25000) });
+    upstream = await fetch(target.toString(), { headers, redirect: "follow", signal: controller.signal });
   } catch (err) {
+    cleanup();
     return sendText(res, 502, `stream fetch failed: ${err.message}`);
   }
+  touch();
 
   if (!upstream.ok && upstream.status !== 206) {
+    cleanup();
+    try {
+      await upstream.body?.cancel();
+    } catch {
+      /* already gone */
+    }
     return sendText(res, upstream.status, `upstream ${upstream.status}`);
   }
 
@@ -208,6 +230,7 @@ async function proxyStream(req, res, url) {
 
   if (isPlaylist) {
     const text = await upstream.text();
+    cleanup();
     const body = Buffer.from(rewritePlaylist(text, upstream.url || target.toString()), "utf8");
     res.writeHead(200, {
       "content-type": "application/vnd.apple.mpegurl",
@@ -218,17 +241,50 @@ async function proxyStream(req, res, url) {
     return res.end(body);
   }
 
-  const body = Buffer.from(await upstream.arrayBuffer());
   const outHeaders = {
     "content-type": type || "application/octet-stream",
-    "content-length": body.length,
     "cache-control": "public, max-age=300",
     "access-control-allow-origin": "*",
   };
-  if (upstream.headers.get("content-range")) outHeaders["content-range"] = upstream.headers.get("content-range");
-  if (upstream.headers.get("accept-ranges")) outHeaders["accept-ranges"] = upstream.headers.get("accept-ranges");
+  const length = upstream.headers.get("content-length");
+  if (length) outHeaders["content-length"] = length;
+  const range = upstream.headers.get("content-range");
+  if (range) outHeaders["content-range"] = range;
+  const acceptRanges = upstream.headers.get("accept-ranges");
+  if (acceptRanges) outHeaders["accept-ranges"] = acceptRanges;
+
   res.writeHead(upstream.status === 206 ? 206 : 200, outHeaders);
-  res.end(body);
+
+  if (!upstream.body) {
+    cleanup();
+    return res.end();
+  }
+
+  const reader = upstream.body.getReader();
+  const pump = async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      touch();
+      if (!res.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) {
+        await new Promise((resolve) => res.once("drain", resolve));
+      }
+    }
+  };
+
+  try {
+    await pump();
+  } catch {
+    /* client aborted or upstream stalled: fall through to close */
+  } finally {
+    cleanup();
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
+    }
+    res.end();
+  }
 }
 
 /* ---------------------------- subtitle layer ---------------------------- */

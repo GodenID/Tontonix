@@ -128,6 +128,8 @@ const state = {
   nextTimer: 0,
   currentUrl: "",
   currentQuality: "",
+  playlist: "",
+  qualities: [],
   switchAt: 0,
   lastReport: "",
   lastResolveError: "",
@@ -1555,6 +1557,8 @@ export async function watchPage(ctx, params) {
   state.provider = null;
   state.providerName = "";
   state.sources = [];
+  state.playlist = "";
+  state.qualities = [];
   state.queue = [];
   state.pool = new Map();
   state.tried = new Set();
@@ -1829,6 +1833,12 @@ function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {})
   state.provider = value.provider;
   state.providerName = value.name || value.provider || "";
   state.sources = (value.sources || []).filter((source) => source && source.url);
+  state.playlist = typeof value.playlist === "string" && value.playlist ? value.playlist : "";
+  // A master playlist carries the full bitrate ladder, so hls.js can adapt when
+  // bandwidth drops. Without one the provider only offers fixed variants.
+  state.qualities = state.playlist
+    ? [{ quality: "auto", url: state.playlist }, ...state.sources]
+    : [...state.sources];
 
   const incoming = (value.subtitles || []).filter((track) => track && (track.url || track.src));
   const locals = state.subTracks.filter((track) => track.local);
@@ -1841,7 +1851,7 @@ function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {})
   populateCaptionMenu();
   ensureSubtitle();
 
-  const first = state.sources[0];
+  const first = state.qualities[0];
   if (!first) return false;
   playSource(first.url, first.quality, { resumeAt, notify });
   loadExternalSubs();
@@ -1891,18 +1901,18 @@ async function failover() {
 function paintQualities() {
   const list = document.getElementById("pui-quality-list");
   if (!list) return;
-  if (!state.sources.length) {
+  if (!state.qualities.length) {
     list.innerHTML = `<button class="pui-opt" disabled>—</button>`;
     return;
   }
-  list.innerHTML = state.sources
+  list.innerHTML = state.qualities
     .map((source, i) => `<button class="pui-opt ${i === 0 ? "active" : ""}" data-q="${i}">${esc(String(source.quality || "auto").toUpperCase())}</button>`)
     .join("");
   list.querySelectorAll("[data-q]").forEach((btn) =>
     btn.addEventListener("click", () => {
       list.querySelectorAll(".pui-opt").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      const pick = state.sources[Number(btn.dataset.q)];
+      const pick = state.qualities[Number(btn.dataset.q)];
       const video = document.getElementById("video");
       const at = castActive() ? castCtx.lastTime || 0 : video ? video.currentTime || 0 : 0;
       if (pick) playSource(pick.url, pick.quality, { resumeAt: at, notify: false });
@@ -1994,7 +2004,15 @@ function playSource(url, quality, { resumeAt = 0, notify = true } = {}) {
   overlay("loading", `${state.providerName || ""} ${String(quality || "auto").toUpperCase()}`.trim());
 
   if (isHls && window.Hls && window.Hls.isSupported()) {
-    const hls = new window.Hls({ maxBufferLength: 30, enableWorker: true });
+    const hls = new window.Hls({
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      maxBufferSize: 60 * 1000 * 1000,
+      backBufferLength: 30,
+      capLevelToPlayerSize: true,
+      enableWorker: true,
+      lowLatencyMode: false,
+    });
     state.hls = hls;
     let recovered = false;
     hls.loadSource(proxied);
