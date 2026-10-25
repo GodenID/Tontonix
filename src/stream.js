@@ -2,10 +2,26 @@
 
 const config = require("./config");
 const stats = require("./provider-stats");
+const atlantic = require("./atlantic");
 const { decryptPayload } = require("./streamcrypto");
 
-/** Provider lineup, mirrors the site: name, flag, audio note, gateway slug. */
+/**
+ * Provider lineup, mirrors the site: name, flag, audio note, gateway slug.
+ * `boost` lifts a provider in the health ranking, `resolver` swaps the gateway
+ * call for a local one.
+ */
 const PROVIDERS = [
+  {
+    id: "atlantic",
+    name: "Atlantic",
+    flag: "us",
+    note: "Original audio. 4K adaptive",
+    filter: null,
+    alt: false,
+    language: null,
+    resolver: "atlantic",
+    boost: 450,
+  },
   { id: "miami", name: "Miami", flag: "us", note: "Original audio. May have 4K", filter: null, alt: false, language: null },
   { id: "boise", name: "Boise", flag: "us", note: "Original audio. May have 4K", filter: null, alt: false, language: null },
   { id: "vegas", name: "Vegas", flag: "us", note: "Original audio", filter: null, alt: false, language: null },
@@ -42,6 +58,23 @@ function headers() {
 }
 
 const seedInflight = new Map();
+
+/**
+ * A provider answering "no streams for this title" is a catalog gap, not a
+ * provider fault. Recording it as a failure would tank every provider's score
+ * the first time the user opens a title the gateway does not carry.
+ */
+function isCatalogGap(message) {
+  const text = String(message || "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("no streams available") ||
+    text.includes("title not found") ||
+    text.includes("title not available") ||
+    text.includes("not available for") ||
+    text.includes("no source")
+  );
+}
 
 async function getSeed(mediaId, { force = false } = {}) {
   const key = String(mediaId);
@@ -103,6 +136,14 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
   if (miss && miss.expires > Date.now()) throw Object.assign(new Error(miss.message), { status: miss.status });
 
   const run = async () => {
+    if (provider.resolver === "atlantic") {
+      return atlantic.resolve({
+        tmdbId: req.tmdbId,
+        mediaType: req.mediaType,
+        season: req.season,
+        episode: req.episode,
+      });
+    }
     // Seed is shared by every provider for a title. Never bypass its cache on a
     // provider refresh: the gateway rate-limits /seed and a 401 retry refreshes it.
     const seed = await getSeed(req.tmdbId);
@@ -146,7 +187,13 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
     }
     stats.record(providerId, { ok: true, ms: Date.now() - startedAt, empty: !(result.sources || []).length });
   } catch (err) {
-    stats.record(providerId, { ok: false, ms: Date.now() - startedAt, error: err.message });
+    const gap = isCatalogGap(err.message);
+    stats.record(providerId, {
+      ok: gap,
+      empty: gap,
+      ms: Date.now() - startedAt,
+      error: err.message,
+    });
     if (err.status === 502 || err.status === 404) {
       failCache.set(key, { message: err.message, status: err.status, expires: Date.now() + 45000 });
       if (failCache.size > 500) failCache.delete(failCache.keys().next().value);

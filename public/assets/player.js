@@ -1926,8 +1926,9 @@ function reportPlayback(ok, error = "") {
   const key = `${provider}|${state.currentUrl}|${ok ? "ok" : "fail"}`;
   if (state.lastReport === key) return;
   state.lastReport = key;
-  const ms = state.switchAt ? Date.now() - state.switchAt : 0;
-  api.reportProvider(provider, ok, ms, error).catch(() => {});
+  // Playback reports carry health only. The resolve latency is what the score
+  // compares, so a long watch session must not look like a slow provider.
+  api.reportProvider(provider, ok, 0, error).catch(() => {});
 }
 
 function destroyHls() {

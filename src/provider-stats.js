@@ -90,7 +90,9 @@ function record(id, { ok = true, ms = 0, empty = false, error = "" } = {}) {
     e.ok += 1;
     e.streak = 0;
     e.lastOk = Date.now();
-    e.ewma = e.ewma ? e.ewma * 0.7 + duration * 0.3 : duration;
+    // Only resolve latency feeds the score. Playback health reports arrive with
+    // ms 0 and must not drag the average up or down.
+    if (duration > 0) e.ewma = e.ewma ? e.ewma * 0.7 + duration * 0.3 : duration;
   } else {
     e.fail += 1;
     e.streak = Math.min(20, e.streak + 1);
@@ -120,7 +122,11 @@ function score(id) {
 
 function order(providers) {
   return providers
-    .map((provider, index) => ({ provider, index, score: score(provider.id) }))
+    .map((provider, index) => ({
+      provider,
+      index,
+      score: score(provider.id) + (Number(provider.boost) || 0),
+    }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((row) => row.provider);
 }
