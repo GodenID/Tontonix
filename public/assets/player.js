@@ -1595,11 +1595,29 @@ export async function watchPage(ctx, params) {
   state.providers = providers;
 
   document.getElementById("app").innerHTML = stageMarkup();
-  document.getElementById("watch-back").addEventListener("click", () => history.back());
+  document.getElementById("watch-back").addEventListener("click", goBackFromWatch);
   bindPlayerControls();
   paintHeader();
   await buildPanel();
   await resolveAuto();
+}
+
+function goBackFromWatch() {
+  const detail = state.detail;
+  const fallback = detail ? `/${detail.mediaType}/${detail.tmdbId}` : "/";
+  const from = location.pathname + location.search;
+  const goFallback = () => {
+    if (typeof window.__navigate === "function") window.__navigate(fallback);
+    else location.assign(fallback);
+  };
+  if (history.length <= 1) {
+    goFallback();
+    return;
+  }
+  history.back();
+  setTimeout(() => {
+    if (location.pathname + location.search === from) goFallback();
+  }, 400);
 }
 
 async function resumePoint() {
