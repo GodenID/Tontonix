@@ -10,6 +10,7 @@ const api = require("./src/api");
 const store = require("./src/store");
 const auth = require("./src/auth");
 const stream = require("./src/stream");
+const atlantic = require("./src/atlantic");
 const tmdbApi = require("./src/tmdb");
 const subtitlesApi = require("./src/subtitles");
 const meta = require("./src/meta");
@@ -441,6 +442,26 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, await subtitlesApi.search(q));
   }
 
+  if (p === "/v1/segments" && method === "GET") {
+    const segments = await atlantic.segments({
+      tmdbId: q.tmdbId,
+      mediaType: q.mediaType,
+      season: q.season,
+      episode: q.episode,
+    });
+    return sendJson(res, 200, { segments });
+  }
+
+  if (p === "/v1/subs/atlantic" && method === "GET") {
+    const subtitles = await atlantic.subtitles({
+      tmdbId: q.tmdbId,
+      imdbId: q.imdbId,
+      season: q.season,
+      episode: q.episode,
+    });
+    return sendJson(res, 200, { subtitles });
+  }
+
   if (p === "/v1/subtitles/convert" && method === "POST") {
     const body = await readBody(req, 4 * 1024 * 1024);
     const text = String(body.text || "");
@@ -457,7 +478,7 @@ async function handleApi(req, res, url) {
     if (!q.imdbId) throw Object.assign(new Error("imdbId required"), { status: 400 });
     try {
       const upstream = await fetch(`${config.trailerApi}/getOldestTrailer?id=${encodeURIComponent(q.imdbId)}`, {
-        headers: { referer: config.streamReferer, origin: new URL(config.streamApi).origin },
+        headers: { referer: config.streamReferer, origin: new URL(config.streamReferer).origin },
         signal: AbortSignal.timeout(10000),
       });
       return sendJson(res, upstream.status, await upstream.json());

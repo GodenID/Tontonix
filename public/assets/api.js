@@ -61,6 +61,8 @@ export const api = {
   sources: (params) => request(`/v1/sources?${new URLSearchParams(params)}`),
   sourcesAll: (params) => request(`/v1/sources/all?${new URLSearchParams(params)}`),
   subtitles: (params) => request(`/v1/subtitles?${new URLSearchParams(params)}`),
+  atlanticSubtitles: (params) => request(`/v1/subs/atlantic?${new URLSearchParams(params)}`),
+  segments: (params) => request(`/v1/segments?${new URLSearchParams(params)}`),
   convertSubtitle: (text, format = "") =>
     request("/v1/subtitles/convert", { method: "POST", body: { text, format } }),
   votes: (tmdbId, mediaType) => request(`/v1/votes?tmdbId=${tmdbId}&mediaType=${mediaType}`),

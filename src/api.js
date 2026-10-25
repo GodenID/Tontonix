@@ -185,14 +185,14 @@ function streamRequest(query) {
 
 async function sourcesFor(query) {
   const req = streamRequest(query);
-  const providerId = query.provider || "miami";
+  const providerId = query.provider || stream.PROVIDERS[0].id;
   const result = await stream.resolveProvider(providerId, req, { force: query.force === "1" });
   return { ...result, request: req };
 }
 
 async function sourcesAll(query) {
   const req = streamRequest(query);
-  const limit = Math.max(1, Math.min(17, Number(query.limit) || 6));
+  const limit = Math.max(1, Math.min(stream.PROVIDERS.length, Number(query.limit) || stream.PROVIDERS.length));
   const results = await stream.resolveAll(req, { limit, force: query.force === "1" });
   return { request: req, providers: results };
 }

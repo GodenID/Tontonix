@@ -6,6 +6,10 @@ function proxyUrl(target) {
   return `/stream?u=${encodeURIComponent(target)}`;
 }
 
+const SEEK_OPTIONS = [10, 15, 30];
+const SEGMENT_TYPES = ["intro", "recap", "credits", "preview"];
+const SEGMENT_LABEL = { intro: "skipIntro", recap: "skipRecap", credits: "skipCredits", preview: "skipPreview" };
+
 const SUB_SIZES = { small: "0.85", standard: "1", large: "1.22", xlarge: "1.45" };
 const SUB_FONTS = {
   default: "inherit",
@@ -24,6 +28,12 @@ const LS = {
   offset: "movy:subOffset",
   volume: "movy:volume",
   muted: "movy:muted",
+  seek: "movy:seekAmount",
+  doubleTap: "movy:doubleTapSeek",
+  autoNext: "movy:autoNext",
+  autoSubs: "movy:autoSubs",
+  autoSkip: "movy:autoSkip",
+  skipTypes: "movy:skipTypes",
 };
 
 function readLS(key, fallback) {
@@ -79,6 +89,20 @@ function storedVolume() {
   const value = Number(readLS(LS.volume, "1"));
   return Number.isFinite(value) ? clamp(value, 0, 1) : 1;
 }
+function storedSeek() {
+  const value = Number(readLS(LS.seek, "10"));
+  return SEEK_OPTIONS.includes(value) ? value : 10;
+}
+function storedBool(key, fallback = true) {
+  return readLS(key, fallback ? "1" : "0") === "1";
+}
+function storedSkipTypes() {
+  const raw = readLS(LS.skipTypes, "");
+  if (!raw) return [...SEGMENT_TYPES];
+  if (raw === "none") return [];
+  const list = raw.split(",").filter((type) => SEGMENT_TYPES.includes(type));
+  return list.length ? list : [];
+}
 
 const state = {
   detail: null,
@@ -122,6 +146,16 @@ const state = {
   volume: storedVolume(),
   muted: readLS(LS.muted, "0") === "1",
   lastVolume: storedVolume() || 1,
+  seekAmount: storedSeek(),
+  doubleTap: storedBool(LS.doubleTap),
+  autoNext: storedBool(LS.autoNext),
+  autoSubs: storedBool(LS.autoSubs),
+  autoSkip: storedBool(LS.autoSkip),
+  skipTypes: storedSkipTypes(),
+  segments: [],
+  segmentKey: "",
+  segmentDone: "",
+  segmentDoneAt: 0,
   resumeSeconds: 0,
   resumedFrom: 0,
   nextTarget: null,
@@ -139,7 +173,6 @@ function providerIcon(p) {
   return `<img src="/flags/${p.flag}.svg" alt="" onerror="this.style.display='none'" />`;
 }
 
-const SKIP = 10;
 const REWIND_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9l5 4"/><path d="M6 9h8a5 5 0 0 1 0 10h-2"/></svg>`;
 const FORWARD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m13 5 5 4-5 4"/><path d="M18 9h-8a5 5 0 0 0 0 10h2"/></svg>`;
 const PLAY_ICON = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.87v14.26c0 .8.87 1.28 1.54.85l11.2-7.13a1 1 0 0 0 0-1.7L8.54 4.02C7.87 3.6 7 4.07 7 4.87Z"/></svg>`;
@@ -215,8 +248,10 @@ function stageMarkup() {
       <div class="sub-overlay" id="sub-overlay" aria-live="off"></div>
       <img class="pui-logo" src="/assets/logo.png" alt="Tontonix" />
 
-      <button class="skip-btn skip-back" id="skip-back" aria-label="Rewind ${SKIP} seconds">${REWIND_ICON}<span>${SKIP}</span></button>
-      <button class="skip-btn skip-fwd" id="skip-fwd" aria-label="Forward ${SKIP} seconds">${FORWARD_ICON}<span>${SKIP}</span></button>
+      <button class="skip-btn skip-back" id="skip-back" aria-label="Rewind ${state.seekAmount} seconds">${REWIND_ICON}<span>${state.seekAmount}</span></button>
+      <button class="skip-btn skip-fwd" id="skip-fwd" aria-label="Forward ${state.seekAmount} seconds">${FORWARD_ICON}<span>${state.seekAmount}</span></button>
+
+      <button class="seg-skip" id="seg-skip" type="button" hidden><span id="seg-skip-label"></span></button>
 
       <div class="watch-overlay" id="overlay"><div class="spinner"></div><div class="watch-note">${t("loadingStream")}</div></div>
 
@@ -230,7 +265,7 @@ function stageMarkup() {
 
       <div class="next-up" id="next-up" hidden>
         <div>
-          <div class="next-up-label">${t("nextIn")} <span id="next-count">8</span>${t("secondsShort")}</div>
+          <div class="next-up-label"><span id="next-label">${t("nextIn")}</span> <span id="next-count">8</span><span id="next-unit">${t("secondsShort")}</span></div>
           <div class="next-up-title" id="next-title"></div>
         </div>
         <div class="next-up-actions">
@@ -245,8 +280,8 @@ function stageMarkup() {
           <input class="pui-seek" id="pui-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek" />
           <div class="pui-ctrls">
             <button class="pui-btn" id="pui-play" aria-label="Play/Pause">${PLAY_ICON}</button>
-            <button class="pui-btn pui-skip" data-skip="-${SKIP}" aria-label="Rewind ${SKIP}s">${REWIND_ICON}<em>${SKIP}</em></button>
-            <button class="pui-btn pui-skip" data-skip="${SKIP}" aria-label="Forward ${SKIP}s">${FORWARD_ICON}<em>${SKIP}</em></button>
+            <button class="pui-btn pui-skip" data-skip="-${state.seekAmount}" aria-label="Rewind ${state.seekAmount}s">${REWIND_ICON}<em>${state.seekAmount}</em></button>
+            <button class="pui-btn pui-skip" data-skip="${state.seekAmount}" aria-label="Forward ${state.seekAmount}s">${FORWARD_ICON}<em>${state.seekAmount}</em></button>
             <span class="pui-time"><span id="pui-cur">0:00</span> / <span id="pui-dur">0:00</span></span>
             <span class="pui-spacer"></span>
             <div class="pui-vol-wrap">
@@ -262,6 +297,10 @@ function stageMarkup() {
         </div>
 
         <div class="pui-menu" id="pui-settings" hidden>
+          <div class="pui-menu-sec">
+            <div class="pui-menu-h">${t("playback")}</div>
+            <div class="pui-set-list" id="pui-playback-list"></div>
+          </div>
           <div class="pui-menu-sec"><div class="pui-menu-h">${t("speed")}</div><div class="pui-menu-list" id="pui-speed-list"></div></div>
           <div class="pui-menu-sec"><div class="pui-menu-h">${t("qualityLabel")}</div><div class="pui-menu-list" id="pui-quality-list"></div></div>
         </div>
@@ -351,6 +390,221 @@ function skip(delta) {
     side.classList.add("flash");
     setTimeout(() => side.classList.remove("flash"), 320);
   }
+}
+
+/* --------------------------- playback settings ---------------------------- */
+
+function renderPlaybackSettings() {
+  const list = document.getElementById("pui-playback-list");
+  if (!list) return;
+
+  const row = (key, label, hint) => `
+    <div class="pui-set">
+      <div class="pui-set-text"><strong>${esc(t(label))}</strong>${hint ? `<small>${esc(t(hint))}</small>` : ""}</div>
+      <button type="button" class="pui-switch ${state[key] ? "on" : ""}" role="switch" aria-checked="${state[key] ? "true" : "false"}" data-flag="${key}" aria-label="${esc(t(label))}"></button>
+    </div>`;
+
+  const segChips = SEGMENT_TYPES.map((type) => {
+    const on = state.skipTypes.includes(type);
+    return `<button type="button" class="pui-chip ${on ? "on" : ""}" data-seg="${type}" aria-pressed="${on}">${esc(t(SEGMENT_LABEL[type].replace("skip", "seg")))}</button>`;
+  }).join("");
+
+  const seekChips = SEEK_OPTIONS.map((n) =>
+    `<button type="button" class="pui-chip ${state.seekAmount === n ? "on" : ""}" data-seek="${n}" aria-pressed="${state.seekAmount === n}">${n}${esc(t("secondsShort"))}</button>`).join("");
+
+  list.innerHTML = [
+    row("autoNext", "autoNext", "autoNextHint"),
+    row("autoSubs", "autoSubs", "autoSubsHint"),
+    row("autoSkip", "autoSkip", "autoSkipHint"),
+    `<div class="pui-set-col"><div class="pui-set-label">${esc(t("segmentsToSkip"))}</div><div class="pui-chips">${segChips}</div></div>`,
+    `<div class="pui-set-col"><div class="pui-set-label">${esc(t("seekAmount"))}</div><div class="pui-chips">${seekChips}</div></div>`,
+    row("doubleTap", "doubleTapSeek", ""),
+  ].join("");
+
+  list.querySelectorAll("[data-flag]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.flag;
+      state[key] = !state[key];
+      writeLS(LS[key], state[key] ? "1" : "0");
+      btn.classList.toggle("on", state[key]);
+      btn.setAttribute("aria-checked", state[key] ? "true" : "false");
+      if (key === "autoSkip") hideSegmentPill();
+      if (key === "autoSubs") ensureSubtitle();
+    });
+  });
+
+  list.querySelectorAll("[data-seg]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const type = btn.dataset.seg;
+      const on = !state.skipTypes.includes(type);
+      state.skipTypes = on ? [...state.skipTypes, type] : state.skipTypes.filter((v) => v !== type);
+      writeLS(LS.skipTypes, state.skipTypes.length ? state.skipTypes.join(",") : "none");
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      hideSegmentPill();
+    });
+  });
+
+  list.querySelectorAll("[data-seek]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.seekAmount = Number(btn.dataset.seek);
+      writeLS(LS.seek, state.seekAmount);
+      list.querySelectorAll("[data-seek]").forEach((other) => {
+        const on = Number(other.dataset.seek) === state.seekAmount;
+        other.classList.toggle("on", on);
+        other.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      paintSeekLabels();
+    });
+  });
+}
+
+function paintSeekLabels() {
+  const amount = state.seekAmount;
+  const back = document.getElementById("skip-back");
+  const fwd = document.getElementById("skip-fwd");
+  if (back) {
+    back.setAttribute("aria-label", `Rewind ${amount} seconds`);
+    const span = back.querySelector("span");
+    if (span) span.textContent = String(amount);
+  }
+  if (fwd) {
+    fwd.setAttribute("aria-label", `Forward ${amount} seconds`);
+    const span = fwd.querySelector("span");
+    if (span) span.textContent = String(amount);
+  }
+  document.querySelectorAll(".pui-skip").forEach((btn) => {
+    const dir = Number(btn.dataset.skip) < 0 ? -1 : 1;
+    btn.dataset.skip = String(dir * amount);
+    btn.setAttribute("aria-label", `${dir < 0 ? "Rewind" : "Forward"} ${amount}s`);
+    const em = btn.querySelector("em");
+    if (em) em.textContent = String(amount);
+  });
+}
+
+/* ----------------------------- skip segments ------------------------------ */
+
+function segmentKey(seg) {
+  return `${seg.type}:${Number(seg.start) || 0}`;
+}
+
+function hideSegmentPill() {
+  const btn = document.getElementById("seg-skip");
+  if (btn) btn.hidden = true;
+}
+
+function activeSegment(time) {
+  for (const seg of state.segments) {
+    if (!state.skipTypes.includes(seg.type)) continue;
+    const start = Number(seg.start);
+    const end = seg.end == null ? null : Number(seg.end);
+    if (!Number.isFinite(start) || time < start) continue;
+    if (end != null && time >= end) continue;
+    if (end == null && time - start > 600) continue;
+    return seg;
+  }
+  return null;
+}
+
+function tickSegments() {
+  const video = document.getElementById("video");
+  const btn = document.getElementById("seg-skip");
+  if (!video || !btn) return;
+  if (!state.segments.length) {
+    btn.hidden = true;
+    return;
+  }
+
+  const time = video.currentTime || 0;
+  if (state.segmentDone) {
+    const done = state.segments.find((seg) => segmentKey(seg) === state.segmentDone);
+    if (done && time < Number(done.start) - 1) state.segmentDone = "";
+  }
+
+  const seg = activeSegment(time);
+  if (!seg) {
+    btn.hidden = true;
+    return;
+  }
+
+  const key = segmentKey(seg);
+  if (state.segmentDone === key) {
+    if (Date.now() - (state.segmentDoneAt || 0) < 2500) {
+      btn.hidden = true;
+      return;
+    }
+    state.segmentDone = "";
+  }
+
+  if (state.autoSkip) {
+    state.segmentDone = key;
+    state.segmentDoneAt = Date.now();
+    if (seg.type === "credits" && seg.end == null) {
+      btn.hidden = true;
+      queueCreditsNext();
+      return;
+    }
+    const end = seg.end == null ? time + state.seekAmount : Number(seg.end);
+    if (end > time) video.currentTime = Math.min(end, video.duration || end);
+    btn.hidden = true;
+    if (seg.type === "credits") queueCreditsNext();
+    return;
+  }
+
+  const label = document.getElementById("seg-skip-label");
+  if (label) label.textContent = t(SEGMENT_LABEL[seg.type] || "skipIntro");
+  btn.dataset.key = key;
+  btn.dataset.end = seg.end == null ? "" : String(seg.end);
+  btn.hidden = false;
+}
+
+function skipSegmentNow() {
+  const btn = document.getElementById("seg-skip");
+  const video = document.getElementById("video");
+  if (!btn || !video) return;
+  const end = Number(btn.dataset.end);
+  if (Number.isFinite(end) && end > 0) video.currentTime = Math.min(end, video.duration || end);
+  else skip(state.seekAmount);
+  state.segmentDone = btn.dataset.key || "";
+  state.segmentDoneAt = Date.now();
+  btn.hidden = true;
+}
+
+async function loadSegments() {
+  const detail = state.detail;
+  if (!detail) return;
+  const key = `${detail.mediaType}:${detail.tmdbId}:${state.season}:${state.episode}`;
+  state.segmentKey = key;
+  state.segments = [];
+  state.segmentDone = "";
+  state.segmentDoneAt = 0;
+  hideSegmentPill();
+
+  let rows = [];
+  try {
+    const res = await api.segments({
+      tmdbId: detail.tmdbId,
+      mediaType: detail.mediaType,
+      season: state.season,
+      episode: state.episode,
+    });
+    rows = Array.isArray(res.segments) ? res.segments : [];
+  } catch {
+    rows = [];
+  }
+  if (state.segmentKey !== key) return;
+  state.segments = rows
+    .filter((seg) => seg && SEGMENT_TYPES.includes(seg.type) && Number.isFinite(Number(seg.start)))
+    .map((seg) => ({ type: seg.type, start: Number(seg.start), end: seg.end == null ? null : Number(seg.end) }))
+    .sort((a, b) => a.start - b.start);
+}
+
+async function queueCreditsNext() {
+  if (state.nextTimer || state.detail?.mediaType !== "tv") return;
+  const target = await nextTarget();
+  if (!target) return;
+  state.nextTarget = target;
+  showNextUp(target);
 }
 
 function renderSpeedMenu(video) {
@@ -583,6 +837,17 @@ function mergeTracks(...lists) {
 
 function ensureSubtitle() {
   if (state.subUserPick) return;
+  if (!state.autoSubs) {
+    if (state.subKey !== "off") {
+      state.subToken++;
+      state.subKey = "off";
+      state.subCues = [];
+      state.subVtt = "";
+      clearSub();
+    }
+    renderCaptionList();
+    return;
+  }
   const idx = autoPickIndex();
   if (idx < 0) {
     state.subKey = "off";
@@ -657,23 +922,27 @@ async function loadExternalSubs() {
   const d = state.detail;
   const params = { tmdbId: d.tmdbId, mediaType: d.mediaType, imdbId: d.imdbId || "" };
   if (d.mediaType === "tv") { params.season = state.season; params.episode = state.episode; }
-  let list = [];
-  try {
-    const res = await api.subtitles(params);
-    list = (res.subtitles || []).filter((s) => s && s.url);
-  } catch {
-    return;
-  }
-  if (reqId !== state.subReq || !list.length) {
-    ensureSubtitle();
-    return;
-  }
 
-  const locals = state.subTracks.filter((track) => track.local);
-  const rest = orderSubtitles(mergeTracks(list, state.subTracks.filter((track) => !track.local)));
-  state.subTracks = [...locals, ...rest];
-  populateCaptionMenu();
-  ensureSubtitle();
+  const pick = (value) =>
+    value && Array.isArray(value.subtitles) ? value.subtitles.filter((track) => track && track.url) : [];
+
+  const merge = (list) => {
+    if (reqId !== state.subReq || !list.length) return;
+    const locals = state.subTracks.filter((track) => track.local);
+    const rest = orderSubtitles(mergeTracks(list, state.subTracks.filter((track) => !track.local)));
+    state.subTracks = [...locals, ...rest];
+    populateCaptionMenu();
+    ensureSubtitle();
+  };
+
+  // Local API answers in a few hundred ms; Atlantic's feed can take seconds or
+  // be unreachable, so its tracks are merged in when they arrive.
+  const local = api.subtitles(params).then(pick, () => []);
+  const atlantic = api.atlanticSubtitles(params).then(pick, () => []);
+
+  merge(await local);
+  merge(await atlantic);
+  if (reqId === state.subReq && !state.subTracks.length) ensureSubtitle();
 }
 
 async function readSubtitleText(file) {
@@ -1299,12 +1568,21 @@ function showNextUp(target) {
   const box = document.getElementById("next-up");
   if (!box) return;
   clearInterval(state.nextTimer);
+  state.nextTimer = 0;
   let left = 8;
   const count = document.getElementById("next-count");
   const title = document.getElementById("next-title");
+  const label = document.getElementById("next-label");
+  const unit = document.getElementById("next-unit");
   if (title) title.textContent = `${t("season")} ${target.season} · ${t("episode")} ${target.episode}`;
-  if (count) count.textContent = String(left);
+  if (label) label.textContent = state.autoNext ? t("nextIn") : t("nextEpisode");
+  if (count) {
+    count.textContent = String(left);
+    count.hidden = !state.autoNext;
+  }
+  if (unit) unit.hidden = !state.autoNext;
   box.hidden = false;
+  if (!state.autoNext) return;
   state.nextTimer = setInterval(() => {
     if (!document.getElementById("video")) {
       cancelNextUp();
@@ -1401,9 +1679,10 @@ function bindPlayerControls() {
   video.addEventListener("pause", () => { setPlayIcons(true); showControls(true); });
   setPlayIcons(true);
 
-  document.getElementById("skip-back")?.addEventListener("click", () => { skip(-SKIP); showControls(false); });
-  document.getElementById("skip-fwd")?.addEventListener("click", () => { skip(SKIP); showControls(false); });
+  document.getElementById("skip-back")?.addEventListener("click", () => { skip(-state.seekAmount); showControls(false); });
+  document.getElementById("skip-fwd")?.addEventListener("click", () => { skip(state.seekAmount); showControls(false); });
   ui.querySelectorAll(".pui-skip").forEach((b) => b.addEventListener("click", () => { skip(Number(b.dataset.skip)); showControls(false); }));
+  document.getElementById("seg-skip")?.addEventListener("click", (e) => { e.stopPropagation(); skipSegmentNow(); showControls(false); });
 
   const seek = document.getElementById("pui-seek");
   let seeking = false;
@@ -1434,6 +1713,7 @@ function bindPlayerControls() {
       const cur = document.getElementById("pui-cur");
       if (cur) cur.textContent = fmtTime(video.currentTime);
     }
+    tickSegments();
   });
   const refreshDur = () => { const dur = document.getElementById("pui-dur"); if (dur) dur.textContent = fmtTime(video.duration); };
   video.addEventListener("loadedmetadata", refreshDur);
@@ -1444,6 +1724,8 @@ function bindPlayerControls() {
   document.getElementById("pui-sub-filter")?.addEventListener("input", (e) => renderCaptionList(e.target.value));
 
   renderSpeedMenu(video);
+  renderPlaybackSettings();
+  paintSeekLabels();
   bindSubStyle();
   applyVolume();
   video.addEventListener("volumechange", syncVolumeFromVideo);
@@ -1502,17 +1784,17 @@ function bindPlayerControls() {
   stage.addEventListener("pointerleave", () => { if (!video.paused) hideControls(); });
   showControls(false);
 
-  // touch: single tap toggles controls/playback, double tap skips 10s on that side
+  // touch: single tap toggles controls/playback, double tap seeks by the configured amount
   let lastTap = 0;
   let tapTimer = 0;
   stage.addEventListener("pointerup", (e) => {
     if (e.pointerType !== "touch") return;
-    if (e.target.closest(".pui-bar") || e.target.closest(".pui-menu") || e.target.closest(".skip-btn") || e.target.closest(".watch-overlay") || e.target.closest(".next-up")) return;
+    if (e.target.closest(".pui-bar") || e.target.closest(".pui-menu") || e.target.closest(".skip-btn") || e.target.closest(".seg-skip") || e.target.closest(".watch-overlay") || e.target.closest(".next-up")) return;
     const now = Date.now();
-    if (now - lastTap < 300) {
+    if (state.doubleTap && now - lastTap < 300) {
       clearTimeout(tapTimer);
       const r = stage.getBoundingClientRect();
-      skip(e.clientX < r.left + r.width / 2 ? -SKIP : SKIP);
+      skip(e.clientX < r.left + r.width / 2 ? -state.seekAmount : state.seekAmount);
       showControls(false);
       lastTap = 0;
       return;
@@ -1529,8 +1811,8 @@ function bindPlayerControls() {
     const tag = e.target.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
     if (!document.getElementById("video")) return;
-    if (e.key === "ArrowRight") { e.preventDefault(); skip(SKIP); showControls(false); }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); skip(-SKIP); showControls(false); }
+    if (e.key === "ArrowRight") { e.preventDefault(); skip(state.seekAmount); showControls(false); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); skip(-state.seekAmount); showControls(false); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setVolume(state.volume + 0.05); showControls(false); }
     else if (e.key === "ArrowDown") { e.preventDefault(); setVolume(state.volume - 0.05); showControls(false); }
     else if (e.key === "k" || e.key === " ") {
@@ -1577,6 +1859,9 @@ export async function watchPage(ctx, params) {
   state.switchAt = 0;
   state.lastReport = "";
   state.lastResolveError = "";
+  state.segments = [];
+  state.segmentKey = "";
+  state.segmentDone = "";
 
   document.getElementById("app").innerHTML = `<div class="watch-page"><div class="watch-top"><div class="watch-title">Loading…</div></div></div>`;
 
@@ -1773,6 +2058,12 @@ function requestParams(providerId) {
   return params;
 }
 
+function resolveErrorText(message) {
+  const text = String(message || "");
+  if (/^atlantic:/i.test(text)) return t("sourceUnavailable");
+  return text || t("streamError");
+}
+
 function overlay(kind, message) {
   const node = document.getElementById("overlay");
   if (!node) return;
@@ -1826,7 +2117,7 @@ async function resolveAuto({ resumeAt = state.resumeSeconds || 0 } = {}) {
   }
 
   const ok = await tryNext({ resumeAt });
-  if (!ok) overlay("error", state.lastResolveError || t("streamError"));
+  if (!ok) overlay("error", resolveErrorText(state.lastResolveError));
 }
 
 function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {}) {
@@ -1855,6 +2146,7 @@ function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {})
   if (!first) return false;
   playSource(first.url, first.quality, { resumeAt, notify });
   loadExternalSubs();
+  loadSegments();
   return true;
 }
 
@@ -1892,7 +2184,7 @@ async function failover() {
   overlay("loading", t("switchingServer"));
   try {
     const ok = await tryNext({ resumeAt: at, reason: t("serverFailed"), notify: false, fresh: true });
-    if (!ok) overlay("error", state.lastResolveError || t("streamError"));
+    if (!ok) overlay("error", resolveErrorText(state.lastResolveError));
   } finally {
     state.failingOver = false;
   }

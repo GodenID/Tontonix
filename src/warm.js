@@ -6,7 +6,7 @@ const stream = require("./stream");
 const INTERVAL_MS = Number(process.env.WARM_INTERVAL_MS || 30 * 60 * 1000);
 const START_DELAY_MS = Number(process.env.WARM_START_MS || 20000);
 const TITLES = Math.max(1, Math.min(20, Number(process.env.WARM_TITLES || 8)));
-const PROVIDERS = Math.max(1, Math.min(17, Number(process.env.WARM_PROVIDERS || 6)));
+const PROVIDERS = Math.max(1, Math.min(20, Number(process.env.WARM_PROVIDERS || 6)));
 const PAUSE_MS = Math.max(0, Number(process.env.WARM_PAUSE_MS || 300));
 const ENABLED = process.env.CACHE_WARM !== "0";
 
@@ -96,7 +96,7 @@ async function run({ limit = TITLES, providers = PROVIDERS, reason = "manual" } 
     for (const pick of picks) {
       try {
         const detail = pick.mediaType === "tv" ? await tmdbApi.tvDetail(pick.id) : await tmdbApi.movieDetail(pick.id);
-        const values = await stream.resolveAll(toRequest(detail), { limit: Math.max(1, Math.min(17, Number(providers) || PROVIDERS)) });
+        const values = await stream.resolveAll(toRequest(detail), { limit: Math.max(1, Math.min(stream.PROVIDERS.length, Number(providers) || PROVIDERS)) });
         status.lastWarmed += values.length;
         status.lastTitles.push({ tmdbId: detail.tmdbId, mediaType: detail.mediaType, title: detail.title, providers: values.length });
       } catch (err) {

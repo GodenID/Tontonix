@@ -37,6 +37,13 @@ const STRINGS = {
     volume: "Volume", mute: "Mute", unmute: "Unmute", pip: "Picture in picture", cast: "Cast",
     castingTo: "Casting to", stopCasting: "Stop casting", castUnavailable: "No cast device found",
     customSubtitle: "Custom", secondsShort: "s",
+    playback: "Playback", autoNext: "Auto Next Episode", autoNextHint: "Play the next episode automatically.",
+    autoSubs: "Auto-Enable Subtitles", autoSubsHint: "Turn on the first available track automatically.",
+    autoSkip: "Auto Skip Segments", autoSkipHint: "Skip intros, recaps, credits and previews automatically.",
+    segmentsToSkip: "Segments to skip", seekAmount: "Seek amount", doubleTapSeek: "Double tap to seek",
+    segIntro: "Intro", segRecap: "Recap", segCredits: "Credits", segPreview: "Preview",
+    skipIntro: "Skip intro", skipRecap: "Skip recap", skipCredits: "Skip credits", skipPreview: "Skip preview",
+    sourceUnavailable: "This title isn't on Atlantic yet.",
   },
   id: {
     home: "Beranda", movies: "Film", shows: "Serial", anime: "Anime", search: "Cari",
@@ -76,6 +83,13 @@ const STRINGS = {
     volume: "Volume", mute: "Bisukan", unmute: "Nyalakan suara", pip: "Mode gambar dalam gambar", cast: "Cast",
     castingTo: "Cast ke", stopCasting: "Hentikan cast", castUnavailable: "Perangkat cast tidak ditemukan",
     customSubtitle: "Kustom", secondsShort: "d",
+    playback: "Pemutaran", autoNext: "Episode berikutnya otomatis", autoNextHint: "Putar episode berikutnya otomatis.",
+    autoSubs: "Subtitle otomatis", autoSubsHint: "Nyalakan trek pertama yang tersedia otomatis.",
+    autoSkip: "Lewati segmen otomatis", autoSkipHint: "Lewati intro, rekap, kredit, dan pratinjau otomatis.",
+    segmentsToSkip: "Segmen yang dilewati", seekAmount: "Jarak lompat", doubleTapSeek: "Ketuk dua kali untuk melompat",
+    segIntro: "Intro", segRecap: "Rekap", segCredits: "Kredit", segPreview: "Pratinjau",
+    skipIntro: "Lewati intro", skipRecap: "Lewati rekap", skipCredits: "Lewati kredit", skipPreview: "Lewati pratinjau",
+    sourceUnavailable: "Judul ini belum tersedia di Atlantic.",
   },
 };
 
