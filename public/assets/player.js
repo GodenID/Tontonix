@@ -164,6 +164,7 @@ const state = {
   currentQuality: "",
   playlist: "",
   qualities: [],
+  qualityPick: "auto",
   switchAt: 0,
   lastReport: "",
   lastResolveError: "",
@@ -1841,6 +1842,7 @@ export async function watchPage(ctx, params) {
   state.sources = [];
   state.playlist = "";
   state.qualities = [];
+  state.qualityPick = "auto";
   state.queue = [];
   state.pool = new Map();
   state.tried = new Set();
@@ -2130,6 +2132,14 @@ function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {})
   state.qualities = state.playlist
     ? [{ quality: "auto", url: state.playlist }, ...state.sources]
     : [...state.sources];
+  // Keep the user's quality across episodes, but drop it when the new title
+  // does not offer that tier.
+  if (
+    state.qualityPick !== "auto" &&
+    !state.qualities.some((source) => String(source.quality || "").toLowerCase() === state.qualityPick)
+  ) {
+    state.qualityPick = "auto";
+  }
 
   const incoming = (value.subtitles || []).filter((track) => track && (track.url || track.src));
   const locals = state.subTracks.filter((track) => track.local);
@@ -2197,19 +2207,97 @@ function paintQualities() {
     list.innerHTML = `<button class="pui-opt" disabled>—</button>`;
     return;
   }
+  const active = state.qualityPick || "auto";
   list.innerHTML = state.qualities
-    .map((source, i) => `<button class="pui-opt ${i === 0 ? "active" : ""}" data-q="${i}">${esc(String(source.quality || "auto").toUpperCase())}</button>`)
+    .map((source, i) => {
+      const label = String(source.quality || "auto").toLowerCase();
+      return `<button class="pui-opt ${label === active ? "active" : ""}" data-q="${i}">${esc(label.toUpperCase())}</button>`;
+    })
     .join("");
   list.querySelectorAll("[data-q]").forEach((btn) =>
     btn.addEventListener("click", () => {
-      list.querySelectorAll(".pui-opt").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
       const pick = state.qualities[Number(btn.dataset.q)];
-      const video = document.getElementById("video");
-      const at = castActive() ? castCtx.lastTime || 0 : video ? video.currentTime || 0 : 0;
-      if (pick) playSource(pick.url, pick.quality, { resumeAt: at, notify: false });
+      if (pick) selectQuality(pick);
     }),
   );
+}
+
+/**
+ * Frame height is the tier name, but a 4:3 master reports its long edge in
+ * height (1440x2076). Label by the short edge so 1440p stays 1440p.
+ */
+function levelLabel(width, height) {
+  const short = Math.min(Number(width) || 0, Number(height) || 0) || Math.max(Number(width) || 0, Number(height) || 0);
+  if (!short) return "auto";
+  const tiers = [480, 720, 1080, 1440, 2160];
+  let best = tiers[0];
+  for (const tier of tiers) if (Math.abs(tier - short) < Math.abs(best - short)) best = tier;
+  if (Math.abs(best - short) <= best * 0.12) return `${best}p`;
+  return `${short}p`;
+}
+
+/** Index of the master level matching a quality label, -1 when none fits. */
+function levelIndexFor(label) {
+  const levels = state.hls?.levels;
+  if (!Array.isArray(levels) || !levels.length) return -1;
+  const want = String(label || "auto").toLowerCase();
+  if (want === "auto") return -1;
+
+  const exact = levels.findIndex((level) => levelLabel(level.width, level.height) === want);
+  if (exact >= 0) return exact;
+
+  const target = Number.parseInt(want, 10);
+  if (!Number.isFinite(target)) return -1;
+  let best = -1;
+  let bestDiff = Infinity;
+  levels.forEach((level, i) => {
+    const short = Math.min(Number(level.width) || 0, Number(level.height) || 0) || Number(level.height) || 0;
+    const diff = Math.abs(short - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = i;
+    }
+  });
+  return best;
+}
+
+/**
+ * Quality changes ride the existing MediaSource: hls.js swaps the level inside
+ * the running stream. Tearing the player down and reloading a variant playlist
+ * loses the audio track in Chrome, so that path is only the no-master fallback.
+ */
+function applyQualityPick() {
+  const hls = state.hls;
+  if (!hls || !Array.isArray(hls.levels) || !hls.levels.length) return false;
+  const pick = state.qualityPick || "auto";
+  if (pick === "auto") {
+    if (hls.autoLevelEnabled === false) hls.currentLevel = -1;
+    return true;
+  }
+  const idx = levelIndexFor(pick);
+  if (idx < 0) return false;
+  if (hls.currentLevel !== idx) hls.currentLevel = idx;
+  return true;
+}
+
+function selectQuality(pick) {
+  if (!pick) return;
+  const label = String(pick.quality || "auto").toLowerCase();
+  state.qualityPick = label;
+
+  if (applyQualityPick()) {
+    const level = state.hls?.levels?.[state.hls.currentLevel];
+    state.currentQuality = state.hls?.currentLevel >= 0 && level ? levelLabel(level.width, level.height) : "auto";
+    paintQualities();
+    return;
+  }
+
+  // Fixed variants only: no ladder to ride, so the source has to reload.
+  const video = document.getElementById("video");
+  const at = castActive() ? castCtx.lastTime || 0 : video ? video.currentTime || 0 : 0;
+  paintQualities();
+  if (label === "auto" && state.playlist) playSource(state.playlist, "auto", { resumeAt: at, notify: false });
+  else if (pick.url) playSource(pick.url, label, { resumeAt: at, notify: false });
 }
 
 function reportPlayback(ok, error = "") {
@@ -2259,6 +2347,9 @@ function playSource(url, quality, { resumeAt = 0, notify = true } = {}) {
   } catch {
     /* teardown only */
   }
+  // A reloaded element can come back muted; re-assert the stored volume before
+  // the new source attaches.
+  applyVolume();
 
   const isHls = /\.m3u8(\?|$)/i.test(url);
   const proxied = proxyUrl(url);
@@ -2311,7 +2402,12 @@ function playSource(url, quality, { resumeAt = 0, notify = true } = {}) {
     hls.loadSource(proxied);
     hls.attachMedia(video);
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      applyQualityPick();
       markReady();
+    });
+    hls.on(window.Hls.Events.LEVEL_SWITCHED, (_evt, data) => {
+      const level = hls.levels?.[data.level];
+      if (level) state.currentQuality = levelLabel(level.width, level.height);
     });
     hls.on(window.Hls.Events.ERROR, (_evt, data) => {
       if (!data.fatal) return;
