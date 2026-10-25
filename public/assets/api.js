@@ -56,6 +56,8 @@ export const api = {
   tv: (id) => request(withLang(`/v1/tv/${id}`)),
   season: (id, n) => request(withLang(`/v1/tv/${id}/season/${n}`)),
   providers: () => request("/v1/providers"),
+  reportProvider: (provider, ok, ms = 0, error = "") =>
+    request("/v1/providers/report", { method: "POST", body: { provider, ok, ms, error } }),
   sources: (params) => request(`/v1/sources?${new URLSearchParams(params)}`),
   sourcesAll: (params) => request(`/v1/sources/all?${new URLSearchParams(params)}`),
   subtitles: (params) => request(`/v1/subtitles?${new URLSearchParams(params)}`),

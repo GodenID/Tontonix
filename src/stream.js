@@ -1,6 +1,7 @@
 "use strict";
 
 const config = require("./config");
+const stats = require("./provider-stats");
 const { decryptPayload } = require("./streamcrypto");
 
 /** Provider lineup, mirrors the site: name, flag, audio note, gateway slug. */
@@ -111,15 +112,22 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
   };
 
   let result;
+  const startedAt = Date.now();
   try {
-    result = await run();
-  } catch (err) {
-    if (err.status === 401 || err.code === "BAD_MAGIC") {
-      seedCache.delete(String(req.tmdbId));
+    try {
       result = await run();
-    } else {
-      throw err;
+    } catch (err) {
+      if (err.status === 401 || err.code === "BAD_MAGIC") {
+        seedCache.delete(String(req.tmdbId));
+        result = await run();
+      } else {
+        throw err;
+      }
     }
+    stats.record(providerId, { ok: true, ms: Date.now() - startedAt, empty: !(result.sources || []).length });
+  } catch (err) {
+    stats.record(providerId, { ok: false, ms: Date.now() - startedAt, error: err.message });
+    throw err;
   }
 
   let sources = result.sources || [];
@@ -138,11 +146,12 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
   return value;
 }
 
-/** Resolve several providers in parallel, keeping lineup order in the result. */
+/** Resolve several providers in parallel, ordered by measured health. */
 async function resolveAll(req, { limit = 6, force = false } = {}) {
   const count = Math.max(1, Math.min(PROVIDERS.length, Number(limit) || 6));
+  const ordered = stats.order(PROVIDERS).slice(0, count);
   const settled = await Promise.all(
-    PROVIDERS.slice(0, count).map(async (provider) => {
+    ordered.map(async (provider) => {
       try {
         const value = await resolveProvider(provider.id, req, { force });
         return value.sources.length ? value : null;
@@ -154,4 +163,19 @@ async function resolveAll(req, { limit = 6, force = false } = {}) {
   return settled.filter(Boolean);
 }
 
-module.exports = { PROVIDERS, providerById, resolveProvider, resolveAll, getSeed };
+function countFresh(cache) {
+  const now = Date.now();
+  let fresh = 0;
+  for (const value of cache.values()) if (value.expires > now) fresh += 1;
+  return fresh;
+}
+
+function cacheStats() {
+  return {
+    seed: { total: seedCache.size, fresh: countFresh(seedCache) },
+    sources: { total: sourceCache.size, fresh: countFresh(sourceCache), ttlMs: config.streamCacheTtlMs },
+    providers: stats.snapshot(),
+  };
+}
+
+module.exports = { PROVIDERS, providerById, resolveProvider, resolveAll, getSeed, cacheStats };

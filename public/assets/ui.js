@@ -35,6 +35,7 @@ const STRINGS = {
     bgNone: "None", bgSoft: "Soft", bgSolid: "Solid", outlineNone: "None", outlineThin: "Thin", outlineThick: "Thick",
     fontDefault: "Default", fontSans: "Sans", fontSerif: "Serif", fontMono: "Mono",
     volume: "Volume", mute: "Mute", unmute: "Unmute", pip: "Picture in picture", cast: "Cast",
+    castingTo: "Casting to", stopCasting: "Stop casting", castUnavailable: "No cast device found",
     customSubtitle: "Custom", secondsShort: "s",
   },
   id: {
@@ -73,6 +74,7 @@ const STRINGS = {
     bgNone: "Tanpa", bgSoft: "Lembut", bgSolid: "Padat", outlineNone: "Tanpa", outlineThin: "Tipis", outlineThick: "Tebal",
     fontDefault: "Bawaan", fontSans: "Sans", fontSerif: "Serif", fontMono: "Mono",
     volume: "Volume", mute: "Bisukan", unmute: "Nyalakan suara", pip: "Mode gambar dalam gambar", cast: "Cast",
+    castingTo: "Cast ke", stopCasting: "Hentikan cast", castUnavailable: "Perangkat cast tidak ditemukan",
     customSubtitle: "Kustom", secondsShort: "d",
   },
 };

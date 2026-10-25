@@ -12,6 +12,9 @@ const auth = require("./src/auth");
 const stream = require("./src/stream");
 const tmdbApi = require("./src/tmdb");
 const subtitlesApi = require("./src/subtitles");
+const meta = require("./src/meta");
+const warm = require("./src/warm");
+const providerStats = require("./src/provider-stats");
 
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MIME = {
@@ -315,7 +318,48 @@ async function handleApi(req, res, url) {
   }
 
   if (p === "/v1/providers" && method === "GET") {
-    return sendJson(res, 200, { providers: stream.PROVIDERS.map(({ id, name, flag, note }) => ({ id, name, flag, note })) });
+    const stats = new Map(providerStats.snapshot().map((row) => [row.id, row]));
+    return sendJson(res, 200, {
+      providers: stream.PROVIDERS.map(({ id, name, flag, note }) => {
+        const row = stats.get(id);
+        return {
+          id,
+          name,
+          flag,
+          note,
+          score: row ? row.score : 500,
+          successRate: row ? row.successRate : 0.5,
+          avgMs: row ? row.avgMs : 0,
+          attempts: row ? row.attempts : 0,
+        };
+      }),
+    });
+  }
+
+  if (p === "/v1/providers/report" && method === "POST") {
+    const body = await readBody(req, 16 * 1024);
+    const id = String(body.provider || "").trim();
+    if (!stream.providerById.has(id)) throw Object.assign(new Error("unknown provider"), { status: 400 });
+    providerStats.record(id, {
+      ok: body.ok !== false,
+      ms: Number(body.ms) || 0,
+      error: typeof body.error === "string" ? body.error : "",
+    });
+    return sendJson(res, 200, { ok: true, provider: id });
+  }
+
+  if (p === "/v1/cache/stats" && method === "GET") {
+    return sendJson(res, 200, { ...stream.cacheStats(), warm: warm.status() });
+  }
+
+  if (p === "/v1/cache/warm" && method === "POST") {
+    const body = await readBody(req, 16 * 1024);
+    const result = await warm.run({
+      limit: body.limit,
+      providers: body.providers,
+      reason: "api",
+    });
+    return sendJson(res, 200, result);
   }
 
   if (p === "/v1/votes" && method === "GET") {
@@ -432,6 +476,7 @@ async function handleApi(req, res, url) {
 /* -------------------------------- static -------------------------------- */
 
 function serveStatic(res, pathname) {
+  if (pathname === "/" || pathname === "") return false;
   const safePath = path.normalize(decodeURIComponent(pathname)).replace(/^(\.\.[/\\])+/, "");
   let filePath = path.join(PUBLIC_DIR, safePath);
   if (!filePath.startsWith(PUBLIC_DIR)) return false;
@@ -473,15 +518,26 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith("/v1/") || pathname === "/v1") return await handleApi(req, res, url);
 
+    if (pathname === "/robots.txt") return sendText(res, 200, meta.robots(meta.originOf(req)));
+
+    if (pathname === "/sitemap.xml") {
+      const xml = await meta.sitemap(meta.originOf(req));
+      return sendText(res, 200, xml, "application/xml; charset=utf-8");
+    }
+
     if (req.method !== "GET" && req.method !== "HEAD") return sendJson(res, 405, { error: "method not allowed" });
 
     if (serveStatic(res, pathname)) return;
 
-    // SPA routes -> index.html
+    // SPA routes -> index.html with route-aware metadata for crawlers and share cards
     if (!pathname.includes(".")) {
-      const index = path.join(PUBLIC_DIR, "index.html");
-      const body = fs.readFileSync(index);
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": body.length });
+      const page = await meta.renderHtml({ pathname, search: url.search, origin: meta.originOf(req) });
+      const body = Buffer.from(page.html || "", "utf8");
+      res.writeHead(page.status, {
+        "content-type": "text/html; charset=utf-8",
+        "content-length": body.length,
+        "cache-control": "public, max-age=300",
+      });
       return res.end(body);
     }
 
@@ -496,10 +552,14 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, config.host, () => {
   console.log(`Tontonix listening on http://${config.host}:${config.port}`);
+  warm.start();
 });
 
 function shutdown() {
-  store.flush().finally(() => server.close(() => process.exit(0)));
+  warm.stop();
+  Promise.allSettled([providerStats.flush(), store.flush()]).finally(() =>
+    server.close(() => process.exit(0)),
+  );
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
