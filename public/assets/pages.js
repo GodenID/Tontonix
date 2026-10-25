@@ -133,6 +133,44 @@ export async function homePage(ctx) {
     body: `${heroSection}<div class="rows container">${rowsHtml}</div>`,
   });
   accountButton();
+  continueRow();
+}
+
+/* Continue watching: local history carries progress and the second offset. */
+async function continueRow() {
+  if (!getToken()) return;
+  let items = [];
+  try {
+    ({ items } = await api.history());
+  } catch {
+    return;
+  }
+  const cards = (items || [])
+    .filter((h) => h && h.tmdbId && (h.seconds || 0) > 30 && (h.progress || 0) > 0.02 && (h.progress || 0) < 0.96)
+    .slice(0, 14)
+    .map((h) => ({
+      id: h.tmdbId,
+      mediaType: h.mediaType === "tv" ? "tv" : "movie",
+      title: h.title,
+      poster: h.poster,
+      progress: h.progress,
+      href: playbackHref(h),
+    }));
+  if (!cards.length) return;
+  const host = document.querySelector(".rows");
+  if (!host) return;
+  host.insertAdjacentHTML("afterbegin", row(t("continueWatching"), cards, { href: "/history", id: "continue" }));
+}
+
+function playbackHref(entry) {
+  const params = new URLSearchParams();
+  if (entry.mediaType === "tv") {
+    params.set("season", String(entry.season || 1));
+    params.set("episode", String(entry.episode || 1));
+  }
+  if (entry.seconds) params.set("t", String(Math.round(entry.seconds)));
+  const base = `/watch/${entry.mediaType === "tv" ? "tv" : "movie"}/${entry.tmdbId}`;
+  return params.toString() ? `${base}?${params}` : base;
 }
 
 function genreNameSlug(slug) {
@@ -329,7 +367,7 @@ export async function detailPage(ctx) {
         <div class="detail-original">${esc(detail.titleOriginal || detail.title)}</div>
         ${meta}
         <div class="detail-actions">
-          <a class="btn btn-primary" href="${playHref}?play=true" data-play>${ICONS.play}${t("play")}</a>
+          <a class="btn btn-primary" href="${playHref}" data-play>${ICONS.play}${t("play")}</a>
           <button class="btn btn-secondary" id="watchlist-btn">${ICONS.plus}${t("addList")}</button>
           ${detail.trailerId ? `<button class="btn btn-ghost" id="trailer-btn">${ICONS.play}${t("trailer")}</button>` : ""}
           <div class="vote-box" id="vote-box"></div>
@@ -442,7 +480,7 @@ export async function detailPage(ctx) {
               <div><div class="episode-num">${t("episode")} ${e.episode_number}${e.air_date ? ` · ${esc(e.air_date)}` : ""}</div>
                 <div class="episode-name">${esc(e.name || `${t("episode")} ${e.episode_number}`)}</div>
                 <div class="episode-desc">${esc(e.overview || "")}</div></div>
-              <a class="btn btn-secondary btn-sm episode-play" href="${watchHref(detail, n, e.episode_number)}?play=true">${ICONS.play}${t("play")}</a>
+              <a class="btn btn-secondary btn-sm episode-play" href="${watchHref(detail, n, e.episode_number)}">${ICONS.play}${t("play")}</a>
             </div>`,
           )
           .join("");
@@ -476,6 +514,7 @@ export async function listPage(kind) {
           .map(
             (h) => `<a class="card" href="${h.mediaType === "tv" ? `/watch/tv/${h.tmdbId}?season=${h.season || 1}&episode=${h.episode || 1}` : `/watch/movie/${h.tmdbId}`}">
               <div class="card-media">${h.poster ? `<img src="${h.poster}" alt="" loading="lazy" />` : ""}
+              ${h.progress ? `<span class="card-progress"><span style="width:${Math.min(100, Math.max(0, h.progress * 100)).toFixed(1)}%"></span></span>` : ""}
               <div class="card-hover"><div class="card-name">${esc(h.title)}</div><div class="card-meta">${h.mediaType === "tv" ? `${t("season")} ${h.season || 1} · ${t("episode")} ${h.episode || 1}` : "Movie"} · ${Math.round((h.progress || 0) * 100)}%</div></div></div></a>`,
           )
           .join("");

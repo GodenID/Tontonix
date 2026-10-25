@@ -186,13 +186,14 @@ function streamRequest(query) {
 async function sourcesFor(query) {
   const req = streamRequest(query);
   const providerId = query.provider || "miami";
-  const result = await stream.resolveProvider(providerId, req);
+  const result = await stream.resolveProvider(providerId, req, { force: query.force === "1" });
   return { ...result, request: req };
 }
 
 async function sourcesAll(query) {
   const req = streamRequest(query);
-  const results = await stream.resolveAll(req);
+  const limit = Math.max(1, Math.min(17, Number(query.limit) || 6));
+  const results = await stream.resolveAll(req, { limit, force: query.force === "1" });
   return { request: req, providers: results };
 }
 

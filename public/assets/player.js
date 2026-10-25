@@ -7,47 +7,125 @@ function proxyUrl(target) {
 }
 
 const SUB_SIZES = { small: "0.85", standard: "1", large: "1.22", xlarge: "1.45" };
-const SUB_COLOR_KEY = "movy:subColor";
-const SUB_SIZE_KEY = "movy:subSize";
+const SUB_FONTS = {
+  default: "inherit",
+  sans: "ui-sans-serif, system-ui, 'Segoe UI', Roboto, Arial, sans-serif",
+  serif: "Georgia, 'Times New Roman', serif",
+  mono: "ui-monospace, 'Cascadia Mono', Consolas, monospace",
+};
+const SUB_BG = { none: "transparent", soft: "rgba(0, 0, 0, 0.42)", solid: "rgba(0, 0, 0, 0.8)" };
+const LS = {
+  color: "movy:subColor",
+  size: "movy:subSize",
+  bg: "movy:subBg",
+  outline: "movy:subOutline",
+  font: "movy:subFont",
+  opacity: "movy:subOpacity",
+  offset: "movy:subOffset",
+  volume: "movy:volume",
+  muted: "movy:muted",
+};
 
-function storedSubColor() {
+function readLS(key, fallback) {
   try {
-    const value = localStorage.getItem(SUB_COLOR_KEY) || "";
-    return /^#[0-9a-f]{6}$/i.test(value) ? value : "#ffffff";
+    const value = localStorage.getItem(key);
+    return value == null ? fallback : value;
   } catch {
-    return "#ffffff";
+    return fallback;
   }
 }
 
-function storedSubSize() {
+function writeLS(key, value) {
   try {
-    const value = localStorage.getItem(SUB_SIZE_KEY);
-    return SUB_SIZES[value] ? value : "standard";
+    localStorage.setItem(key, String(value));
   } catch {
-    return "standard";
+    /* storage blocked */
   }
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function storedColor() {
+  const value = readLS(LS.color, "");
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : "#ffffff";
+}
+function storedSize() {
+  const value = readLS(LS.size, "standard");
+  return SUB_SIZES[value] ? value : "standard";
+}
+function storedBg() {
+  const value = readLS(LS.bg, "soft");
+  return SUB_BG[value] ? value : "soft";
+}
+function storedOutline() {
+  const value = readLS(LS.outline, "thin");
+  return ["none", "thin", "thick"].includes(value) ? value : "thin";
+}
+function storedFont() {
+  const value = readLS(LS.font, "default");
+  return SUB_FONTS[value] ? value : "default";
+}
+function storedOpacity() {
+  const value = Number(readLS(LS.opacity, "1"));
+  return Number.isFinite(value) ? clamp(value, 0.4, 1) : 1;
+}
+function storedOffset() {
+  const value = Number(readLS(LS.offset, "0"));
+  return Number.isFinite(value) ? clamp(value, -30, 30) : 0;
+}
+function storedVolume() {
+  const value = Number(readLS(LS.volume, "1"));
+  return Number.isFinite(value) ? clamp(value, 0, 1) : 1;
 }
 
 const state = {
   detail: null,
   providers: [],
-  current: null,
+  provider: null,
+  providerName: "",
   sources: [],
+  queue: [],
+  pool: new Map(),
+  tried: new Set(),
+  failingOver: false,
+  switching: false,
+  started: false,
   subtitles: [],
   quality: null,
   season: 1,
   episode: 1,
+  episodeCounts: {},
   hls: null,
   saveTimer: 0,
   keyHandler: null,
+  fsHandler: null,
   ui: null,
-  subLang: null,
+  subTracks: [],
   subKey: null,
+  subLang: null,
+  prefLang: "",
   subUserPick: false,
-  subApply: 0,
   subReq: 0,
-  subColor: storedSubColor(),
-  subSize: storedSubSize(),
+  subToken: 0,
+  subCues: [],
+  subVtt: "",
+  subName: "",
+  subOffset: storedOffset(),
+  subColor: storedColor(),
+  subSize: storedSize(),
+  subBg: storedBg(),
+  subOutline: storedOutline(),
+  subFont: storedFont(),
+  subOpacity: storedOpacity(),
+  volume: storedVolume(),
+  muted: readLS(LS.muted, "0") === "1",
+  lastVolume: storedVolume() || 1,
+  resumeSeconds: 0,
+  resumedFrom: 0,
+  nextTarget: null,
+  nextTimer: 0,
 };
 
 function providerIcon(p) {
@@ -63,6 +141,10 @@ const CC_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const GEAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>`;
 const FS_ENTER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
 const FS_EXIT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M21 16h-3a2 2 0 0 0-2 2v3M3 16h3a2 2 0 0 1 2 2v3"/></svg>`;
+const VOLUME_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor" stroke="none"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>`;
+const MUTE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor" stroke="none"/><path d="m17 9 5 6M22 9l-5 6"/></svg>`;
+const PIP_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1" fill="currentColor" stroke="none"/></svg>`;
+const CAST_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 17a4 4 0 0 1 4 4M3 12a9 9 0 0 1 9 9M3 21h.01"/><path d="M8 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4"/></svg>`;
 
 const LANG_NAMES = {
   en: "English", eng: "English", es: "Español", spa: "Español", fr: "Français", fre: "Français", fra: "Français",
@@ -122,7 +204,7 @@ function stageMarkup() {
       <div><div class="watch-title" id="watch-title">${esc(state.detail?.title || "")}</div><div class="watch-sub" id="watch-sub"></div></div>
     </div>
     <div class="watch-stage" id="stage">
-      <video id="video" playsinline crossorigin="anonymous"></video>
+      <video id="video" playsinline crossorigin="anonymous" x-webkit-airplay="allow"></video>
       <div class="sub-overlay" id="sub-overlay" aria-live="off"></div>
       <img class="pui-logo" src="/assets/logo.png" alt="Tontonix" />
 
@@ -130,6 +212,17 @@ function stageMarkup() {
       <button class="skip-btn skip-fwd" id="skip-fwd" aria-label="Forward ${SKIP} seconds">${FORWARD_ICON}<span>${SKIP}</span></button>
 
       <div class="watch-overlay" id="overlay"><div class="spinner"></div><div class="watch-note">${t("loadingStream")}</div></div>
+
+      <div class="next-up" id="next-up" hidden>
+        <div>
+          <div class="next-up-label">${t("nextIn")} <span id="next-count">8</span>${t("secondsShort")}</div>
+          <div class="next-up-title" id="next-title"></div>
+        </div>
+        <div class="next-up-actions">
+          <button class="btn btn-primary btn-sm" id="next-play">${t("playNow")}</button>
+          <button class="btn btn-ghost btn-sm" id="next-cancel">${t("cancel")}</button>
+        </div>
+      </div>
 
       <div class="player-ui" id="player-ui">
         <button class="pui-bigplay" id="pui-bigplay" aria-label="Play">${PLAY_ICON}</button>
@@ -141,8 +234,14 @@ function stageMarkup() {
             <button class="pui-btn pui-skip" data-skip="${SKIP}" aria-label="Forward ${SKIP}s">${FORWARD_ICON}<em>${SKIP}</em></button>
             <span class="pui-time"><span id="pui-cur">0:00</span> / <span id="pui-dur">0:00</span></span>
             <span class="pui-spacer"></span>
+            <div class="pui-vol-wrap">
+              <button class="pui-btn" id="pui-mute" aria-label="${t("mute")}">${VOLUME_ICON}</button>
+              <input class="pui-vol" id="pui-vol" type="range" min="0" max="1" step="0.01" value="${state.volume}" aria-label="${t("volume")}" />
+            </div>
             <button class="pui-btn" id="pui-cc" aria-label="Subtitles">${CC_ICON}</button>
             <button class="pui-btn" id="pui-gear" aria-label="Settings">${GEAR_ICON}</button>
+            <button class="pui-btn" id="pui-pip" aria-label="${t("pip")}">${PIP_ICON}</button>
+            <button class="pui-btn" id="pui-cast" aria-label="${t("cast")}">${CAST_ICON}</button>
             <button class="pui-btn" id="pui-fs" aria-label="Fullscreen">${FS_ENTER_ICON}</button>
           </div>
         </div>
@@ -156,19 +255,64 @@ function stageMarkup() {
           <div class="pui-menu-sec">
             <div class="pui-menu-h" id="pui-caption-h">${t("subtitles")}</div>
             <input class="pui-sub-filter" id="pui-sub-filter" type="search" placeholder="${t("filterSubtitles")}" autocomplete="off" spellcheck="false" aria-label="${t("filterSubtitles")}" />
+            <div class="pui-menu-list" id="pui-caption-list"></div>
+          </div>
+          <div class="pui-menu-sec">
+            <div class="pui-menu-h">${t("subtitleDelay")}</div>
+            <div class="pui-sub-timing">
+              <button type="button" class="pui-mini" data-delay="-1">-1s</button>
+              <button type="button" class="pui-mini" data-delay="-0.5">-0.5s</button>
+              <button type="button" class="pui-delay-val" id="pui-delay-val" title="0s">0.0s</button>
+              <button type="button" class="pui-mini" data-delay="0.5">+0.5s</button>
+              <button type="button" class="pui-mini" data-delay="1">+1s</button>
+            </div>
+          </div>
+          <div class="pui-menu-sec">
+            <div class="pui-menu-h">${t("subtitleStyle")}</div>
             <div class="pui-sub-style">
               <label class="pui-sub-color" for="pui-sub-color">
                 <span>${t("textColor")}</span>
-                <input id="pui-sub-color" type="color" value="#ffffff" aria-label="${t("textColor")}" />
+                <input id="pui-sub-color" type="color" value="${state.subColor}" aria-label="${t("textColor")}" />
               </label>
               <div class="pui-sub-sizes" id="pui-sub-sizes" role="group" aria-label="${t("size")}">
                 <button type="button" data-size="small" aria-label="${t("small")}" title="${t("small")}">A</button>
-                <button type="button" data-size="standard" class="active" aria-label="${t("standard")}" title="${t("standard")}">A</button>
+                <button type="button" data-size="standard" aria-label="${t("standard")}" title="${t("standard")}">A</button>
                 <button type="button" data-size="large" aria-label="${t("large")}" title="${t("large")}">A</button>
                 <button type="button" data-size="xlarge" aria-label="${t("extraLarge")}" title="${t("extraLarge")}">A</button>
               </div>
             </div>
-            <div class="pui-menu-list" id="pui-caption-list"></div>
+            <div class="pui-sub-grid">
+              <label>${t("background")}
+                <select id="pui-sub-bg">
+                  <option value="none">${t("bgNone")}</option>
+                  <option value="soft">${t("bgSoft")}</option>
+                  <option value="solid">${t("bgSolid")}</option>
+                </select>
+              </label>
+              <label>${t("outline")}
+                <select id="pui-sub-outline">
+                  <option value="none">${t("outlineNone")}</option>
+                  <option value="thin">${t("outlineThin")}</option>
+                  <option value="thick">${t("outlineThick")}</option>
+                </select>
+              </label>
+              <label>${t("font")}
+                <select id="pui-sub-font">
+                  <option value="default">${t("fontDefault")}</option>
+                  <option value="sans">${t("fontSans")}</option>
+                  <option value="serif">${t("fontSerif")}</option>
+                  <option value="mono">${t("fontMono")}</option>
+                </select>
+              </label>
+              <label>${t("opacity")}
+                <input id="pui-sub-opacity" type="range" min="0.4" max="1" step="0.05" value="${state.subOpacity}" aria-label="${t("opacity")}" />
+              </label>
+            </div>
+            <div class="pui-sub-file">
+              <button type="button" class="pui-opt" id="pui-sub-upload">${t("uploadSubtitle")}</button>
+              <button type="button" class="pui-opt" id="pui-sub-download">${t("downloadSubtitle")}</button>
+              <input id="pui-sub-file" type="file" accept=".srt,.vtt,.ass,.ssa,.sub,.smi,.sami" hidden />
+            </div>
           </div>
         </div>
       </div>
@@ -206,6 +350,683 @@ function renderSpeedMenu(video) {
     }),
   );
 }
+
+/* ------------------------------ subtitle engine --------------------------- */
+
+function trackKey(track) {
+  if (!track) return "";
+  if (track.id) return `${track.source || "sub"}:${track.id}`;
+  return `url:${String(track.url || track.src || "").trim().toLowerCase()}`;
+}
+
+function subProxyUrl(track) {
+  const raw = String(track.url || track.src || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("/sub?")) return raw;
+
+  let target = raw;
+  if (raw.startsWith("/stream?")) {
+    const inner = new URLSearchParams(raw.slice(raw.indexOf("?") + 1)).get("u");
+    if (!inner) return raw;
+    target = inner;
+  } else if (raw.startsWith("/")) {
+    return raw;
+  }
+
+  const params = new URLSearchParams({ u: target });
+  const fmt = String(track.format || track.type || "").toLowerCase();
+  if (fmt && fmt !== "vtt") params.set("fmt", fmt);
+  const enc = String(track.encoding || "").trim();
+  if (enc) params.set("enc", enc);
+  return `/sub?${params.toString()}`;
+}
+
+function subDetail(track) {
+  const parts = [];
+  if (track.local) parts.push(t("customSubtitle"));
+  if (track.origin) parts.push(String(track.origin));
+  if (track.release) parts.push(String(track.release).slice(0, 46));
+  if (track.format) parts.push(String(track.format).toUpperCase());
+  if (track.downloads) parts.push(track.downloads >= 1000 ? `${Math.round(track.downloads / 1000)}k` : String(track.downloads));
+  if (track.trusted) parts.push("trusted");
+  return parts.join(" · ");
+}
+
+function parseTimestamp(value) {
+  const match = /^(?:(\d{1,3}):)?(\d{1,2}):(\d{2})(?:[.,](\d{1,3}))?$/.exec(String(value || "").trim());
+  if (!match) return null;
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const millis = Number((match[4] || "0").padEnd(3, "0"));
+  return hours * 3600 + minutes * 60 + seconds + millis / 1000;
+}
+
+function cueMarkup(raw) {
+  const cleaned = String(raw || "")
+    .replace(/<\/?(?:c|v|lang|ruby|rt)(?:\.[^>]*)?>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n");
+  return esc(cleaned)
+    .replace(/&lt;(\/?)(i|b|u|em|strong)&gt;/gi, "<$1$2>")
+    .replace(/\n/g, "<br>");
+}
+
+function parseVtt(text) {
+  const source = String(text || "").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const blocks = source.split(/\n{2,}/);
+  const cues = [];
+  for (const block of blocks) {
+    const rows = block.split("\n");
+    if (!rows.length) continue;
+    if (/^\s*WEBVTT/.test(rows[0]) || /^\s*(NOTE|STYLE|REGION)\b/.test(rows[0])) continue;
+    const at = rows.findIndex((row) => row.includes("-->"));
+    if (at < 0) continue;
+    const [from, to] = rows[at].split("-->");
+    const start = parseTimestamp(from.trim());
+    const end = parseTimestamp(String(to || "").trim().split(/\s+/)[0]);
+    if (start == null || end == null || end <= start) continue;
+    const body = rows.slice(at + 1).join("\n").trim();
+    if (!body) continue;
+    cues.push({ start, end, html: cueMarkup(body) });
+  }
+  cues.sort((a, b) => a.start - b.start);
+  return cues;
+}
+
+function clearSub() {
+  const box = document.getElementById("sub-overlay");
+  if (!box) return;
+  box.textContent = "";
+  box.dataset.sig = "";
+}
+
+function renderSubtitle() {
+  const box = document.getElementById("sub-overlay");
+  const video = document.getElementById("video");
+  if (!box || !video) return;
+  if (!state.subCues.length || state.subKey === "off") {
+    if (box.dataset.sig !== "") clearSub();
+    return;
+  }
+
+  const now = (video.currentTime || 0) - state.subOffset;
+  const active = [];
+  for (const cue of state.subCues) {
+    if (cue.start > now) break;
+    if (cue.end > now) active.push(cue);
+  }
+
+  const sig = active.map((cue) => cue.html).join("\u0001");
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = active.map((cue) => `<div class="sub-line">${cue.html}</div>`).join("");
+}
+
+async function loadSubtitle(track) {
+  const token = ++state.subToken;
+  state.subCues = [];
+  state.subVtt = "";
+  state.subName = "";
+  clearSub();
+
+  if (!track) {
+    state.subKey = "off";
+    state.subLang = "off";
+    renderCaptionList();
+    return;
+  }
+
+  state.subKey = trackKey(track);
+  state.subLang = subCode(track);
+  const label = subLabel(track, 0);
+
+  try {
+    let text = track.vttText || "";
+    if (!text) {
+      const url = subProxyUrl(track);
+      if (!url) throw new Error("missing subtitle url");
+      const res = await fetch(url, { credentials: "omit" });
+      if (!res.ok) throw new Error(`subtitle ${res.status}`);
+      text = await res.text();
+    }
+    if (token !== state.subToken) return;
+    const cues = parseVtt(text);
+    if (!cues.length) throw new Error("empty subtitle");
+    state.subVtt = text;
+    state.subName = track.fileName || track.display || label;
+    state.subCues = cues;
+    renderSubtitle();
+  } catch {
+    if (token !== state.subToken) return;
+    toast(`${t("subtitleFailed")}: ${label}`);
+    state.subKey = "off";
+    state.subCues = [];
+    clearSub();
+  }
+  renderCaptionList();
+}
+
+function selectedIndex() {
+  if (state.subKey === "off") return -1;
+  if (state.subKey) {
+    const exact = state.subTracks.findIndex((tr) => trackKey(tr) === state.subKey);
+    if (exact >= 0) return exact;
+  }
+  return -1;
+}
+
+function autoPickIndex() {
+  if (state.prefLang === "off") return -1;
+  if (!state.subTracks.length) return -1;
+  const prefs = [];
+  if (state.prefLang) prefs.push(state.prefLang);
+  const ui = String(getLang() || "").toLowerCase();
+  if (ui) prefs.push(ui);
+  if (state.subLang && state.subLang !== "off") prefs.push(state.subLang);
+  prefs.push("en", "eng", "id", "ind");
+  for (const pref of prefs) {
+    const idx = state.subTracks.findIndex((tr) => {
+      const code = subCode(tr);
+      return code === pref || (pref.length > 2 && code.startsWith(pref));
+    });
+    if (idx >= 0) return idx;
+  }
+  return 0;
+}
+
+function orderSubtitles(list) {
+  const ui = String(getLang() || "en").toLowerCase();
+  const rank = (track) => {
+    const code = subCode(track);
+    if (code === ui) return 0;
+    if (code === "en") return 1;
+    if (code === "id") return 2;
+    return 3;
+  };
+  return list
+    .map((track, i) => ({ track, i }))
+    .sort((a, b) => rank(a.track) - rank(b.track) || a.i - b.i)
+    .map((entry) => entry.track);
+}
+
+function mergeTracks(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    for (const track of list || []) {
+      if (!track) continue;
+      const key = trackKey(track);
+      if (!key || map.has(key)) continue;
+      map.set(key, track);
+    }
+  }
+  return [...map.values()];
+}
+
+function ensureSubtitle() {
+  if (state.subUserPick) return;
+  const idx = autoPickIndex();
+  if (idx < 0) {
+    state.subKey = "off";
+    state.subCues = [];
+    clearSub();
+    renderCaptionList();
+    return;
+  }
+  const track = state.subTracks[idx];
+  if (trackKey(track) !== state.subKey) loadSubtitle(track);
+  else renderSubtitle();
+}
+
+function populateCaptionMenu() {
+  const header = document.getElementById("pui-caption-h");
+  if (header) header.textContent = state.subTracks.length ? `${t("subtitles")} · ${state.subTracks.length}` : t("subtitles");
+  const filter = document.getElementById("pui-sub-filter");
+  renderCaptionList(filter ? filter.value : "");
+}
+
+function renderCaptionList(query = "") {
+  const list = document.getElementById("pui-caption-list");
+  if (!list) return;
+  const q = String(query || "").trim().toLowerCase();
+  const rows = [`<button class="pui-opt ${state.subKey === "off" ? "active" : ""}" data-cc="-1">${esc(t("off"))}</button>`];
+  let shown = 0;
+
+  state.subTracks.forEach((track, i) => {
+    const label = subLabel(track, i);
+    const detail = subDetail(track);
+    const haystack = `${label} ${detail} ${track.language || ""} ${track.lang || ""} ${track.release || ""}`.toLowerCase();
+    if (q && !haystack.includes(q)) return;
+    shown++;
+    const active = state.subKey === trackKey(track);
+    rows.push(
+      `<button class="pui-opt ${active ? "active" : ""}" data-cc="${i}" title="${esc(detail || label)}">
+        <span class="pui-opt-title">${esc(label)}${track.hi ? ' <em class="pui-sub-tag">HI</em>' : ""}</span>
+        ${detail ? `<span class="pui-opt-sub">${esc(detail)}</span>` : ""}
+      </button>`,
+    );
+  });
+
+  if (!shown) rows.push(`<div class="pui-sub-empty">${esc(t("noSubtitles"))}</div>`);
+  list.innerHTML = rows.join("");
+  list.querySelectorAll("[data-cc]").forEach((btn) => {
+    btn.addEventListener("click", () => chooseSubtitle(Number(btn.dataset.cc)));
+  });
+}
+
+function chooseSubtitle(index) {
+  const track = index >= 0 ? state.subTracks[index] : null;
+  state.subUserPick = true;
+  state.prefLang = track ? subCode(track) : "off";
+  if (!track) {
+    state.subToken++;
+    state.subKey = "off";
+    state.subLang = "off";
+    state.subCues = [];
+    state.subVtt = "";
+    clearSub();
+    renderCaptionList();
+    return;
+  }
+  loadSubtitle(track);
+}
+
+async function loadExternalSubs() {
+  const video = document.getElementById("video");
+  if (!video || !state.detail) return;
+  const reqId = ++state.subReq;
+  const d = state.detail;
+  const params = { tmdbId: d.tmdbId, mediaType: d.mediaType, imdbId: d.imdbId || "" };
+  if (d.mediaType === "tv") { params.season = state.season; params.episode = state.episode; }
+  let list = [];
+  try {
+    const res = await api.subtitles(params);
+    list = (res.subtitles || []).filter((s) => s && s.url);
+  } catch {
+    return;
+  }
+  if (reqId !== state.subReq || !list.length) {
+    ensureSubtitle();
+    return;
+  }
+
+  const locals = state.subTracks.filter((track) => track.local);
+  const rest = orderSubtitles(mergeTracks(list, state.subTracks.filter((track) => !track.local)));
+  state.subTracks = [...locals, ...rest];
+  populateCaptionMenu();
+  ensureSubtitle();
+}
+
+async function readSubtitleText(file) {
+  const buffer = await file.arrayBuffer();
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer).replace(/^\uFEFF/, "");
+  } catch {
+    return new TextDecoder("windows-1252").decode(buffer);
+  }
+}
+
+async function uploadSubtitle(file) {
+  if (!file) return;
+  if (file.size > 4 * 1024 * 1024) {
+    toast("Subtitle file too large");
+    return;
+  }
+  try {
+    const raw = await readSubtitleText(file);
+    let vtt = raw;
+    if (!/^\s*WEBVTT\b/i.test(raw)) {
+      const converted = await api.convertSubtitle(raw, "");
+      vtt = converted?.vtt || "";
+    }
+    if (!/^\s*WEBVTT\b/i.test(vtt) || !parseVtt(vtt).length) throw new Error("empty");
+
+    const track = {
+      id: `local:${Date.now()}`,
+      source: "local",
+      display: file.name.replace(/\.[^.]+$/, ""),
+      language: file.name,
+      fileName: file.name,
+      local: true,
+      vttText: vtt,
+    };
+    state.subTracks = [track, ...state.subTracks.filter((tr) => trackKey(tr) !== trackKey(track))];
+    state.subUserPick = true;
+    await loadSubtitle(track);
+    populateCaptionMenu();
+    toast(t("subtitleAdded"));
+  } catch {
+    toast(t("subtitleFailed"));
+  }
+}
+
+function downloadSubtitle() {
+  if (!state.subVtt) {
+    toast(t("noSubtitleLoaded"));
+    return;
+  }
+  const name = (state.detail?.title || "subtitle").replace(/[^\w.-]+/g, "_");
+  const blob = new Blob([state.subVtt], { type: "text/vtt;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${name}.${state.subLang || "sub"}.vtt`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function hexLum(hex) {
+  const value = String(hex || "").replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(value)) return 1;
+  const r = parseInt(value.slice(0, 2), 16) / 255;
+  const g = parseInt(value.slice(2, 4), 16) / 255;
+  const b = parseInt(value.slice(4, 6), 16) / 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+function outlineShadow(kind, color) {
+  const light = hexLum(color) > 0.62;
+  if (kind === "none") return "none";
+  if (kind === "thick") {
+    return light
+      ? "0 2px 3px rgba(0, 0, 0, 0.98), 0 0 12px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1)"
+      : "0 2px 3px rgba(255, 255, 255, 0.4), 0 0 12px rgba(0, 0, 0, 0.95)";
+  }
+  return light
+    ? "0 1px 2px rgba(0, 0, 0, 0.95), 0 0 8px rgba(0, 0, 0, 0.75)"
+    : "0 1px 2px rgba(255, 255, 255, 0.35), 0 0 10px rgba(0, 0, 0, 0.9)";
+}
+
+function applySubStyle() {
+  const color = /^#[0-9a-f]{6}$/i.test(state.subColor) ? state.subColor : "#ffffff";
+  const scale = SUB_SIZES[state.subSize] || "1";
+  const shadow = outlineShadow(state.subOutline, color);
+
+  for (const node of [document.getElementById("stage"), document.getElementById("video"), document.getElementById("sub-overlay")]) {
+    if (!node) continue;
+    node.style.setProperty("--sub-color", color);
+    node.style.setProperty("--sub-scale", scale);
+    node.style.setProperty("--sub-shadow", shadow);
+    node.style.setProperty("--sub-bg", SUB_BG[state.subBg] || "transparent");
+    node.style.setProperty("--sub-font", SUB_FONTS[state.subFont] || "inherit");
+    node.style.setProperty("--sub-opacity", String(state.subOpacity));
+  }
+}
+
+function paintDelay() {
+  const label = document.getElementById("pui-delay-val");
+  if (label) label.textContent = `${state.subOffset > 0 ? "+" : ""}${state.subOffset.toFixed(1)}s`;
+}
+
+function bindSubStyle() {
+  const color = document.getElementById("pui-sub-color");
+  if (color) {
+    color.value = state.subColor;
+    color.addEventListener("input", () => {
+      state.subColor = color.value;
+      writeLS(LS.color, state.subColor);
+      applySubStyle();
+    });
+  }
+
+  const sizes = document.getElementById("pui-sub-sizes");
+  if (sizes) {
+    const sync = () =>
+      sizes.querySelectorAll("[data-size]").forEach((btn) => {
+        const active = btn.dataset.size === state.subSize;
+        btn.classList.toggle("active", active);
+        btn.setAttribute("aria-pressed", String(active));
+      });
+    sync();
+    sizes.querySelectorAll("[data-size]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.subSize = btn.dataset.size;
+        writeLS(LS.size, state.subSize);
+        applySubStyle();
+        sync();
+      });
+    });
+  }
+
+  const bg = document.getElementById("pui-sub-bg");
+  if (bg) {
+    bg.value = state.subBg;
+    bg.addEventListener("change", () => {
+      state.subBg = SUB_BG[bg.value] ? bg.value : "soft";
+      writeLS(LS.bg, state.subBg);
+      applySubStyle();
+    });
+  }
+
+  const outline = document.getElementById("pui-sub-outline");
+  if (outline) {
+    outline.value = state.subOutline;
+    outline.addEventListener("change", () => {
+      state.subOutline = ["none", "thin", "thick"].includes(outline.value) ? outline.value : "thin";
+      writeLS(LS.outline, state.subOutline);
+      applySubStyle();
+    });
+  }
+
+  const font = document.getElementById("pui-sub-font");
+  if (font) {
+    font.value = state.subFont;
+    font.addEventListener("change", () => {
+      state.subFont = SUB_FONTS[font.value] ? font.value : "default";
+      writeLS(LS.font, state.subFont);
+      applySubStyle();
+    });
+  }
+
+  const opacity = document.getElementById("pui-sub-opacity");
+  if (opacity) {
+    opacity.value = String(state.subOpacity);
+    opacity.addEventListener("input", () => {
+      state.subOpacity = clamp(Number(opacity.value) || 1, 0.4, 1);
+      writeLS(LS.opacity, state.subOpacity);
+      applySubStyle();
+    });
+  }
+
+  document.querySelectorAll("[data-delay]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.subOffset = clamp(Number((state.subOffset + Number(btn.dataset.delay)).toFixed(1)), -30, 30);
+      writeLS(LS.offset, state.subOffset);
+      paintDelay();
+      renderSubtitle();
+    });
+  });
+  document.getElementById("pui-delay-val")?.addEventListener("click", () => {
+    state.subOffset = 0;
+    writeLS(LS.offset, 0);
+    paintDelay();
+    renderSubtitle();
+  });
+  paintDelay();
+
+  document.getElementById("pui-sub-upload")?.addEventListener("click", () => {
+    document.getElementById("pui-sub-file")?.click();
+  });
+  document.getElementById("pui-sub-file")?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    uploadSubtitle(file);
+  });
+  document.getElementById("pui-sub-download")?.addEventListener("click", downloadSubtitle);
+
+  applySubStyle();
+}
+
+/* --------------------------------- volume -------------------------------- */
+
+function paintVolumeUI() {
+  const btn = document.getElementById("pui-mute");
+  if (btn) btn.innerHTML = state.muted || state.volume === 0 ? MUTE_ICON : VOLUME_ICON;
+  if (btn) btn.setAttribute("aria-label", state.muted ? t("unmute") : t("mute"));
+  const slider = document.getElementById("pui-vol");
+  if (slider) {
+    const value = state.muted ? 0 : state.volume;
+    slider.value = String(value);
+    slider.style.setProperty("--p", `${value * 100}%`);
+  }
+}
+
+function applyVolume() {
+  const video = document.getElementById("video");
+  if (video) {
+    video.volume = state.volume;
+    video.muted = state.muted;
+  }
+  paintVolumeUI();
+}
+
+function setVolume(next) {
+  state.volume = clamp(next, 0, 1);
+  if (state.volume > 0) {
+    state.muted = false;
+    state.lastVolume = state.volume;
+    writeLS(LS.volume, state.volume);
+    writeLS(LS.muted, "0");
+  } else {
+    state.muted = true;
+    writeLS(LS.muted, "1");
+  }
+  applyVolume();
+}
+
+function toggleMute() {
+  if (state.muted || state.volume === 0) {
+    state.muted = false;
+    state.volume = state.lastVolume || 0.6;
+    writeLS(LS.muted, "0");
+    writeLS(LS.volume, state.volume);
+  } else {
+    state.lastVolume = state.volume;
+    state.muted = true;
+    writeLS(LS.muted, "1");
+  }
+  applyVolume();
+}
+
+function syncVolumeFromVideo() {
+  const video = document.getElementById("video");
+  if (!video) return;
+  state.volume = clamp(video.volume, 0, 1);
+  state.muted = video.muted;
+  if (state.volume > 0 && !state.muted) state.lastVolume = state.volume;
+  writeLS(LS.volume, state.volume);
+  writeLS(LS.muted, state.muted ? "1" : "0");
+  paintVolumeUI();
+}
+
+/* ------------------------------ PiP / cast ------------------------------- */
+
+function initExtras(video) {
+  const pip = document.getElementById("pui-pip");
+  if (pip) {
+    if (!document.pictureInPictureEnabled || typeof video.requestPictureInPicture !== "function") {
+      pip.hidden = true;
+    } else {
+      pip.addEventListener("click", () => {
+        if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+        else video.requestPictureInPicture().catch(() => toast(t("pip")));
+      });
+      video.addEventListener("enterpictureinpicture", () => pip.classList.add("on"));
+      video.addEventListener("leavepictureinpicture", () => pip.classList.remove("on"));
+    }
+  }
+
+  const cast = document.getElementById("pui-cast");
+  if (cast) {
+    const remote = video.remote;
+    const airplay = typeof video.webkitShowPlaybackTargetPicker === "function";
+    if (!remote || typeof remote.prompt !== "function") {
+      if (!airplay) cast.hidden = true;
+    }
+    cast.addEventListener("click", () => {
+      if (remote && typeof remote.prompt === "function") {
+        remote.prompt().catch(() => {
+          if (airplay) video.webkitShowPlaybackTargetPicker();
+        });
+        return;
+      }
+      if (airplay) video.webkitShowPlaybackTargetPicker();
+    });
+  }
+}
+
+/* ------------------------------- next up --------------------------------- */
+
+function cancelNextUp() {
+  clearInterval(state.nextTimer);
+  state.nextTimer = 0;
+  const box = document.getElementById("next-up");
+  if (box) box.hidden = true;
+}
+
+function showNextUp(target) {
+  const box = document.getElementById("next-up");
+  if (!box) return;
+  clearInterval(state.nextTimer);
+  let left = 8;
+  const count = document.getElementById("next-count");
+  const title = document.getElementById("next-title");
+  if (title) title.textContent = `${t("season")} ${target.season} · ${t("episode")} ${target.episode}`;
+  if (count) count.textContent = String(left);
+  box.hidden = false;
+  state.nextTimer = setInterval(() => {
+    if (!document.getElementById("video")) {
+      cancelNextUp();
+      return;
+    }
+    left -= 1;
+    if (left <= 0) {
+      cancelNextUp();
+      goEpisode(target.season, target.episode);
+      return;
+    }
+    if (count) count.textContent = String(left);
+  }, 1000);
+}
+
+async function nextTarget() {
+  const detail = state.detail;
+  if (!detail || detail.mediaType !== "tv") return null;
+  const counts = state.episodeCounts;
+
+  if (counts[state.season] == null) {
+    try {
+      const data = await api.season(detail.tmdbId, state.season);
+      counts[state.season] = (data.episodes || []).length;
+    } catch {
+      /* unknown count */
+    }
+  }
+
+  const current = counts[state.season];
+  if (!current || state.episode < current) return { season: state.season, episode: state.episode + 1 };
+
+  const seasons = (detail.seasons || [])
+    .map((season) => Number(season.season_number))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const after = seasons.filter((n) => n > state.season).sort((a, b) => a - b);
+
+  for (const season of after) {
+    if (counts[season] == null) {
+      try {
+        const data = await api.season(detail.tmdbId, season);
+        counts[season] = (data.episodes || []).length;
+      } catch {
+        counts[season] = 0;
+      }
+    }
+    if (counts[season] > 0) return { season, episode: 1 };
+  }
+  return null;
+}
+
+/* --------------------------------- player -------------------------------- */
 
 function bindPlayerControls() {
   const video = document.getElementById("video");
@@ -276,20 +1097,28 @@ function bindPlayerControls() {
   video.addEventListener("loadedmetadata", refreshDur);
   video.addEventListener("durationchange", refreshDur);
 
+  video.addEventListener("timeupdate", renderSubtitle);
+  video.addEventListener("seeked", renderSubtitle);
+  document.getElementById("pui-sub-filter")?.addEventListener("input", (e) => renderCaptionList(e.target.value));
+
   renderSpeedMenu(video);
-  applySubStyle();
   bindSubStyle();
-  const refreshCues = () => {
-    for (const tt of video.textTracks) {
-      if (tt.mode !== "disabled") {
-        renderCues(tt);
-        return;
-      }
-    }
-  };
-  video.addEventListener("timeupdate", refreshCues);
-  video.addEventListener("seeked", refreshCues);
-  document.getElementById("pui-sub-filter")?.addEventListener("input", (e) => renderCaptionList(video, e.target.value));
+  applyVolume();
+  video.addEventListener("volumechange", syncVolumeFromVideo);
+
+  const muteBtn = document.getElementById("pui-mute");
+  muteBtn?.addEventListener("click", toggleMute);
+  const volSlider = document.getElementById("pui-vol");
+  volSlider?.addEventListener("input", () => setVolume(Number(volSlider.value)));
+
+  initExtras(video);
+
+  document.getElementById("next-play")?.addEventListener("click", () => {
+    const target = state.nextTarget;
+    cancelNextUp();
+    if (target) goEpisode(target.season, target.episode);
+  });
+  document.getElementById("next-cancel")?.addEventListener("click", cancelNextUp);
 
   document.getElementById("pui-gear")?.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -317,12 +1146,14 @@ function bindPlayerControls() {
     else if (stage.requestFullscreen) stage.requestFullscreen().catch(() => video.webkitEnterFullscreen?.());
     else video.webkitEnterFullscreen?.();
   });
-  document.addEventListener("fullscreenchange", () => {
+  if (state.fsHandler) document.removeEventListener("fullscreenchange", state.fsHandler);
+  state.fsHandler = () => {
     const fs = document.fullscreenElement === stage;
     stage.classList.toggle("fullscreen", fs);
     if (fsBtn) fsBtn.innerHTML = fs ? FS_EXIT_ICON : FS_ENTER_ICON;
     showControls(false);
-  });
+  };
+  document.addEventListener("fullscreenchange", state.fsHandler);
 
   stage.addEventListener("pointerdown", (e) => { lastPT = e.pointerType; });
   stage.addEventListener("pointermove", (e) => { if (e.pointerType !== "touch") showControls(false); });
@@ -334,7 +1165,7 @@ function bindPlayerControls() {
   let tapTimer = 0;
   stage.addEventListener("pointerup", (e) => {
     if (e.pointerType !== "touch") return;
-    if (e.target.closest(".pui-bar") || e.target.closest(".pui-menu") || e.target.closest(".skip-btn") || e.target.closest(".watch-overlay")) return;
+    if (e.target.closest(".pui-bar") || e.target.closest(".pui-menu") || e.target.closest(".skip-btn") || e.target.closest(".watch-overlay") || e.target.closest(".next-up")) return;
     const now = Date.now();
     if (now - lastTap < 300) {
       clearTimeout(tapTimer);
@@ -358,8 +1189,16 @@ function bindPlayerControls() {
     if (!document.getElementById("video")) return;
     if (e.key === "ArrowRight") { e.preventDefault(); skip(SKIP); showControls(false); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); skip(-SKIP); showControls(false); }
-    else if (e.key === "k" || e.key === " ") { e.preventDefault(); togglePlay(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setVolume(state.volume + 0.05); showControls(false); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); setVolume(state.volume - 0.05); showControls(false); }
+    else if (e.key === "k" || e.key === " ") {
+      if (e.key === " " && tag === "BUTTON") return;
+      e.preventDefault();
+      togglePlay();
+    }
     else if (e.key === "f") { e.preventDefault(); fsBtn?.click(); }
+    else if (e.key === "m") { e.preventDefault(); toggleMute(); }
+    else if (e.key === "p") { e.preventDefault(); document.getElementById("pui-pip")?.click(); }
     else if (e.key === "Escape") closeMenus();
   };
   document.addEventListener("keydown", state.keyHandler);
@@ -370,10 +1209,25 @@ function bindPlayerControls() {
 export async function watchPage(ctx, params) {
   const type = ctx.type === "tv" ? "tv" : "movie";
   const id = ctx.id;
-  state.season = Number(params.get("season") || 1);
-  state.episode = Number(params.get("episode") || 1);
-  state.current = null;
+  state.detail = null;
+  state.season = Math.max(1, Number(params.get("season") || 1) || 1);
+  state.episode = Math.max(1, Number(params.get("episode") || 1) || 1);
+  state.provider = null;
+  state.providerName = "";
   state.sources = [];
+  state.queue = [];
+  state.pool = new Map();
+  state.tried = new Set();
+  state.subTracks = [];
+  state.subCues = [];
+  state.subKey = null;
+  state.subLang = null;
+  state.subUserPick = false;
+  state.subToken++;
+  state.resumeSeconds = Math.max(0, Number(params.get("t") || 0) || 0);
+  state.resumedFrom = 0;
+  state.saveTimer = 0;
+  state.episodeCounts = {};
 
   document.getElementById("app").innerHTML = `<div class="watch-page"><div class="watch-top"><div class="watch-title">Loading…</div></div></div>`;
 
@@ -384,7 +1238,15 @@ export async function watchPage(ctx, params) {
     return;
   }
 
-  const { providers } = await api.providers();
+  for (const season of state.detail.seasons || []) {
+    if (season.season_number != null && season.episode_count) {
+      state.episodeCounts[Number(season.season_number)] = Number(season.episode_count);
+    }
+  }
+
+  if (!state.resumeSeconds) state.resumeSeconds = await resumePoint();
+
+  const { providers } = await api.providers().catch(() => ({ providers: [] }));
   state.providers = providers;
 
   document.getElementById("app").innerHTML = stageMarkup();
@@ -395,14 +1257,46 @@ export async function watchPage(ctx, params) {
   await resolveAuto();
 }
 
+async function resumePoint() {
+  if (!getToken() || !state.detail) return 0;
+  try {
+    const { items } = await api.history();
+    const d = state.detail;
+    const hit = (items || []).find(
+      (h) =>
+        h.tmdbId === d.tmdbId &&
+        h.mediaType === d.mediaType &&
+        (d.mediaType !== "tv" || (h.season === state.season && h.episode === state.episode)),
+    );
+    if (!hit) return 0;
+    if ((hit.progress || 0) > 0.97) return 0;
+    const seconds = Number(hit.seconds) || 0;
+    return seconds > 30 ? seconds : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function paintHeader() {
   const sub = document.getElementById("watch-sub");
   if (!sub || !state.detail) return;
   const d = state.detail;
-  sub.textContent =
+  const bits = [
     d.mediaType === "tv"
       ? `${t("season")} ${state.season} · ${t("episode")} ${state.episode}${d.year ? ` · ${d.year}` : ""}`
-      : `${d.year || ""}${d.duration ? ` · ${d.duration} ${t("minutes")}` : ""}`;
+      : `${d.year || ""}${d.duration ? ` · ${d.duration} ${t("minutes")}` : ""}`,
+  ];
+  if (state.providerName) bits.push(esc(state.providerName));
+  if (state.resumedFrom > 0) bits.push(`<button class="resume-link" id="start-over">${esc(t("startOver"))}</button>`);
+  sub.innerHTML = bits.filter(Boolean).join(" · ");
+  document.getElementById("start-over")?.addEventListener("click", () => {
+    const video = document.getElementById("video");
+    if (!video) return;
+    video.currentTime = 0;
+    state.resumedFrom = 0;
+    paintHeader();
+    video.play().catch(() => {});
+  });
 }
 
 async function buildPanel() {
@@ -428,9 +1322,10 @@ async function buildEpisodes() {
     holder.innerHTML = '<div class="spinner"></div>';
     try {
       const data = await api.season(state.detail.tmdbId, n);
+      state.episodeCounts[n] = (data.episodes || []).length;
       holder.innerHTML = data.episodes
         .map(
-          (e) => `<button class="ep-chip ${e.episode_number === state.episode ? "active" : ""}" data-ep="${e.episode_number}">
+          (e) => `<button class="ep-chip ${e.episode_number === state.episode && n === state.season ? "active" : ""}" data-ep="${e.episode_number}">
             <div class="n">${t("episode")} ${e.episode_number}</div><div class="t">${esc(e.name || "")}</div></button>`,
         )
         .join("");
@@ -443,42 +1338,63 @@ async function buildEpisodes() {
   };
 
   document.getElementById("w-season").addEventListener("change", (e) => {
-    state.season = Number(e.target.value);
+    const next = Math.max(1, Number(e.target.value) || 1);
+    state.season = next;
     state.episode = 1;
-    loadSeason(state.season);
+    state.resumedFrom = 0;
+    history.replaceState({}, "", `/watch/tv/${state.detail.tmdbId}?season=${next}&episode=1`);
+    loadSeason(next);
     paintHeader();
-    resolveAuto();
+    resolveAuto({ resumeAt: 0 });
   });
   document.getElementById("w-prev").addEventListener("click", () => goEpisode(state.season, Math.max(1, state.episode - 1)));
-  document.getElementById("w-next").addEventListener("click", () => goEpisode(state.season, state.episode + 1));
+  document.getElementById("w-next").addEventListener("click", async () => {
+    const target = await nextTarget();
+    if (target) goEpisode(target.season, target.episode);
+    else toast(t("lastEpisode"));
+  });
 
   await loadSeason(state.season);
 }
 
 function goEpisode(season, episode) {
-  state.season = season;
-  state.episode = episode;
-  const url = `/watch/tv/${state.detail.tmdbId}?season=${season}&episode=${episode}`;
+  if (!document.getElementById("video") || !state.detail) return;
+  const s = Math.max(1, Number(season) || 1);
+  const e = Math.max(1, Number(episode) || 1);
+  const count = state.episodeCounts[s];
+  if (count && e > count) {
+    toast(t("lastEpisode"));
+    return;
+  }
+  const prevSeason = state.season;
+  state.season = s;
+  state.episode = e;
+  state.resumedFrom = 0;
+  const url = `/watch/tv/${state.detail.tmdbId}?season=${s}&episode=${e}`;
   history.replaceState({}, "", url);
   paintHeader();
-  document.querySelectorAll(".ep-chip").forEach((c) => c.classList.toggle("active", Number(c.dataset.ep) === episode));
-  resolveAuto();
+  if (prevSeason !== s) buildEpisodes();
+  else document.querySelectorAll(".ep-chip").forEach((c) => c.classList.toggle("active", Number(c.dataset.ep) === e));
+  resolveAuto({ resumeAt: 0 });
 }
 
 function requestParams(providerId) {
   const d = state.detail;
-  return {
-    provider: providerId,
+  const season = Number(state.season);
+  const episode = Number(state.episode);
+  const params = {
     tmdbId: d.tmdbId,
     mediaType: d.mediaType,
     title: d.title || "",
     titleOriginal: d.titleOriginal || "",
     year: d.year || "",
     imdbId: d.imdbId || "",
-    season: state.season,
-    episode: state.episode,
+    season: Number.isFinite(season) && season > 0 ? season : 1,
+    episode: Number.isFinite(episode) && episode > 0 ? episode : 1,
     totalSeasons: d.seasons?.length || d.episodeInfo?.seasons || 1,
   };
+  if (providerId) params.provider = providerId;
+  return params;
 }
 
 function overlay(kind, message) {
@@ -494,33 +1410,105 @@ function overlay(kind, message) {
     kind === "loading"
       ? `<div class="spinner"></div><div class="watch-note">${esc(message || t("loadingStream"))}</div>`
       : `<div class="watch-error">${esc(message)}</div><button class="btn btn-secondary btn-sm" id="ov-retry">Retry</button>`;
-  document.getElementById("ov-retry")?.addEventListener("click", () => resolveAuto());
+  document.getElementById("ov-retry")?.addEventListener("click", () => {
+    const video = document.getElementById("video");
+    resolveAuto({ resumeAt: video && Number.isFinite(video.currentTime) ? video.currentTime : 0 });
+  });
 }
 
-async function resolveAuto() {
+async function resolveAuto({ resumeAt = state.resumeSeconds || 0 } = {}) {
   state.subReq++;
+  state.subToken++;
   state.subKey = null;
-  state.subLang = null;
+  state.subLang = state.prefLang || null;
   state.subUserPick = false;
+  state.subCues = [];
+  state.subTracks = state.subTracks.filter((track) => track.local);
+  state.tried = new Set();
+  state.pool = new Map();
+  clearSub();
   overlay("loading");
-  for (const p of state.providers) {
-    state.current = p.id;
-    try {
-      const data = await api.sources(requestParams(p.id));
-      const sources = (data.sources || []).filter((s) => s && s.url);
-      if (!sources.length) continue;
-      state.sources = sources;
-      state.subtitles = (data.subtitles || []).filter((s) => s && (s.url || s.src));
-      paintQualities();
-      playSource(sources[0].url, sources[0].quality);
-      loadExternalSubs();
+  document.getElementById("video")?.pause();
+
+  const ids = state.providers.map((p) => p.id);
+  state.queue = ids;
+
+  try {
+    const data = await api.sourcesAll({ ...requestParams(), limit: 8 });
+    const list = (data.providers || []).filter((value) => value && Array.isArray(value.sources) && value.sources.length);
+    if (list.length) {
+      for (const value of list) state.pool.set(value.provider, value);
+      const found = list.map((value) => value.provider);
+      state.queue = [...found, ...ids.filter((id) => !found.includes(id))];
+      const first = list[0];
+      state.tried.add(first.provider);
+      applyProvider(first, { resumeAt });
       return;
-    } catch { /* server down — slide to the next one silently */ }
+    }
+  } catch {
+    /* fall back to one-by-one */
   }
-  state.sources = [];
-  state.subtitles = [];
+
+  const ok = await tryNext({ resumeAt });
+  if (!ok) overlay("error", t("streamError"));
+}
+
+function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {}) {
+  state.provider = value.provider;
+  state.providerName = value.name || value.provider || "";
+  state.sources = (value.sources || []).filter((source) => source && source.url);
+
+  const incoming = (value.subtitles || []).filter((track) => track && (track.url || track.src));
+  const locals = state.subTracks.filter((track) => track.local);
+  const previous = state.subTracks.filter((track) => !track.local);
+  state.subTracks = [...locals, ...orderSubtitles(mergeTracks(incoming, previous))];
+
   paintQualities();
-  overlay("error", t("streamError"));
+  paintHeader();
+  if (reason) toast(`${reason} · ${state.providerName}`);
+  populateCaptionMenu();
+  ensureSubtitle();
+
+  const first = state.sources[0];
+  if (!first) return false;
+  playSource(first.url, first.quality, { resumeAt, notify });
+  loadExternalSubs();
+  return true;
+}
+
+async function tryNext({ resumeAt = 0, reason = "", notify = true, fresh = false } = {}) {
+  const order = state.queue.length ? state.queue : state.providers.map((p) => p.id);
+  for (;;) {
+    const id = order.find((value) => !state.tried.has(value));
+    if (!id) return false;
+    state.tried.add(id);
+    try {
+      const cached = fresh ? null : state.pool.get(id);
+      const value = cached && cached.sources?.length ? cached : await api.sources({ ...requestParams(id), force: "1" });
+      const sources = (value.sources || []).filter((source) => source && source.url);
+      if (!sources.length) continue;
+      applyProvider({ ...value, provider: value.provider || id }, { resumeAt, reason, notify });
+      return true;
+    } catch {
+      /* server down: keep walking */
+    }
+  }
+}
+
+async function failover() {
+  if (state.failingOver || !state.detail) return;
+  state.failingOver = true;
+  state.switching = true;
+  const video = document.getElementById("video");
+  const at = video && Number.isFinite(video.currentTime) ? video.currentTime : state.resumedFrom || 0;
+  destroyHls();
+  overlay("loading", t("switchingServer"));
+  try {
+    const ok = await tryNext({ resumeAt: at, reason: t("serverFailed"), notify: false, fresh: true });
+    if (!ok) overlay("error", t("streamError"));
+  } finally {
+    state.failingOver = false;
+  }
 }
 
 function paintQualities() {
@@ -531,14 +1519,15 @@ function paintQualities() {
     return;
   }
   list.innerHTML = state.sources
-    .map((s, i) => `<button class="pui-opt ${i === 0 ? "active" : ""}" data-q="${i}">${esc(String(s.quality || "auto").toUpperCase())}</button>`)
+    .map((source, i) => `<button class="pui-opt ${i === 0 ? "active" : ""}" data-q="${i}">${esc(String(source.quality || "auto").toUpperCase())}</button>`)
     .join("");
   list.querySelectorAll("[data-q]").forEach((btn) =>
     btn.addEventListener("click", () => {
       list.querySelectorAll(".pui-opt").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       const pick = state.sources[Number(btn.dataset.q)];
-      if (pick) playSource(pick.url, pick.quality, true);
+      const video = document.getElementById("video");
+      if (pick) playSource(pick.url, pick.quality, { resumeAt: video ? video.currentTime || 0 : 0, notify: false });
     }),
   );
 }
@@ -547,354 +1536,98 @@ function destroyHls() {
   if (state.hls) {
     try {
       state.hls.destroy();
-    } catch { /* already gone */ }
+    } catch {
+      /* already gone */
+    }
     state.hls = null;
   }
 }
 
-function trackKey(track) {
-  if (!track) return "";
-  if (track.id) return `${track.source || "sub"}:${track.id}`;
-  return `url:${String(track.url || track.src || "").trim().toLowerCase()}`;
-}
-
-function subProxyUrl(track) {
-  const raw = String(track.url || track.src || "").trim();
-  if (!raw) return "";
-  if (raw.startsWith("/sub?")) return raw;
-
-  let target = raw;
-  if (raw.startsWith("/stream?")) {
-    const inner = new URLSearchParams(raw.slice(raw.indexOf("?") + 1)).get("u");
-    if (!inner) return raw;
-    target = inner;
-  } else if (raw.startsWith("/")) {
-    return raw;
-  }
-
-  const params = new URLSearchParams({ u: target });
-  const fmt = String(track.format || track.type || "").toLowerCase();
-  if (fmt && fmt !== "vtt") params.set("fmt", fmt);
-  const enc = String(track.encoding || "").trim();
-  if (enc) params.set("enc", enc);
-  return `/sub?${params.toString()}`;
-}
-
-function subDetail(track) {
-  const parts = [];
-  if (track.origin) parts.push(String(track.origin));
-  if (track.release) parts.push(String(track.release).slice(0, 46));
-  if (track.format) parts.push(String(track.format).toUpperCase());
-  if (track.downloads) parts.push(track.downloads >= 1000 ? `${Math.round(track.downloads / 1000)}k` : String(track.downloads));
-  if (track.trusted) parts.push("trusted");
-  return parts.join(" · ");
-}
-
-function selectedIndex() {
-  if (state.subKey === "off") return -1;
-  if (state.subKey) {
-    const exact = state.subtitles.findIndex((tr) => trackKey(tr) === state.subKey);
-    if (exact >= 0) return exact;
-  }
-  if (state.subLang && state.subLang !== "off") {
-    const byLang = state.subtitles.findIndex((tr) => subCode(tr) === state.subLang);
-    if (byLang >= 0) return byLang;
-  }
-  return -1;
-}
-
-function hexLum(hex) {
-  const value = String(hex || "").replace("#", "");
-  if (!/^[0-9a-f]{6}$/i.test(value)) return 1;
-  const r = parseInt(value.slice(0, 2), 16) / 255;
-  const g = parseInt(value.slice(2, 4), 16) / 255;
-  const b = parseInt(value.slice(4, 6), 16) / 255;
-  return 0.299 * r + 0.587 * g + 0.114 * b;
-}
-
-function applySubStyle() {
-  const color = /^#[0-9a-f]{6}$/i.test(state.subColor) ? state.subColor : "#ffffff";
-  const scale = SUB_SIZES[state.subSize] || "1";
-  const shadow =
-    hexLum(color) > 0.62
-      ? "0 1px 2px rgba(0, 0, 0, 0.95), 0 0 8px rgba(0, 0, 0, 0.75)"
-      : "0 1px 2px rgba(255, 255, 255, 0.35), 0 0 10px rgba(0, 0, 0, 0.9)";
-
-  for (const node of [document.getElementById("stage"), document.getElementById("video"), document.getElementById("sub-overlay")]) {
-    if (!node) continue;
-    node.style.setProperty("--sub-color", color);
-    node.style.setProperty("--sub-scale", scale);
-    node.style.setProperty("--sub-shadow", shadow);
-  }
-}
-
-function bindSubStyle() {
-  const color = document.getElementById("pui-sub-color");
-  if (color) {
-    color.value = state.subColor;
-    color.addEventListener("input", () => {
-      state.subColor = color.value;
-      try { localStorage.setItem(SUB_COLOR_KEY, state.subColor); } catch { /* storage blocked */ }
-      applySubStyle();
-    });
-  }
-
-  const sizes = document.getElementById("pui-sub-sizes");
-  if (!sizes) return;
-  const sync = () =>
-    sizes.querySelectorAll("[data-size]").forEach((btn) => {
-      const active = btn.dataset.size === state.subSize;
-      btn.classList.toggle("active", active);
-      btn.setAttribute("aria-pressed", String(active));
-    });
-  sync();
-  sizes.querySelectorAll("[data-size]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      state.subSize = btn.dataset.size;
-      try { localStorage.setItem(SUB_SIZE_KEY, state.subSize); } catch { /* storage blocked */ }
-      applySubStyle();
-      sync();
-    });
-  });
-}
-
-function clearCues() {
-  const box = document.getElementById("sub-overlay");
-  if (!box) return;
-  box.textContent = "";
-  box.dataset.sig = "";
-}
-
-function renderCues(track) {
-  const box = document.getElementById("sub-overlay");
-  if (!box) return;
-  const cues = track && track.mode !== "disabled" ? track.activeCues : null;
-  if (!cues || !cues.length) {
-    if (box.dataset.sig !== "") clearCues();
-    return;
-  }
-
-  const sig = Array.from({ length: cues.length }, (_, i) => cues[i]?.text || "").join("\u0001");
-  if (box.dataset.sig === sig) return;
-  box.dataset.sig = sig;
-  box.textContent = "";
-
-  const frag = document.createDocumentFragment();
-  for (let i = 0; i < cues.length; i++) {
-    const cue = cues[i];
-    const line = document.createElement("div");
-    line.className = "sub-line";
-    if (typeof cue.getCueAsHTML === "function") line.appendChild(cue.getCueAsHTML());
-    else line.textContent = cue.text || "";
-    frag.appendChild(line);
-  }
-  box.appendChild(frag);
-}
-
-/* One <track> only. Native cue rendering stays off; the overlay owns the paint. */
-function applySubtitle(video) {
-  const token = ++state.subApply;
-  video.querySelectorAll("track").forEach((el) => el.remove());
-  clearCues();
-  const idx = selectedIndex();
-  if (idx < 0) return;
-  const track = state.subtitles[idx];
-  const src = subProxyUrl(track);
-  if (!src) return;
-
-  const el = document.createElement("track");
-  el.kind = "subtitles";
-  el.label = subLabel(track, idx);
-  el.srclang = (subCode(track) || "en").slice(0, 3);
-  el.src = src;
-  el.default = true;
-  video.appendChild(el);
-
-  let bound = false;
-  const show = () => {
-    if (token !== state.subApply || !el.isConnected) return;
-    const tt = el.track;
-    if (!tt) return;
-    for (const other of video.textTracks) if (other !== tt) other.mode = "disabled";
-    tt.mode = "hidden";
-    if (!bound) {
-      bound = true;
-      tt.addEventListener("cuechange", () => {
-        if (token === state.subApply) renderCues(tt);
-      });
-    }
-    renderCues(tt);
-  };
-  el.addEventListener("load", show);
-  requestAnimationFrame(show);
-  setTimeout(show, 350);
-}
-
-function autoPickIndex() {
-  if (!state.subtitles.length) return -1;
-  const prefs = [];
-  const ui = String(getLang() || "").toLowerCase();
-  if (ui) prefs.push(ui);
-  if (state.subLang && state.subLang !== "off") prefs.push(state.subLang);
-  prefs.push("en", "eng", "id", "ind");
-  for (const pref of prefs) {
-    const idx = state.subtitles.findIndex((tr) => {
-      const code = subCode(tr);
-      return code === pref || (pref.length > 2 && code.startsWith(pref));
-    });
-    if (idx >= 0) return idx;
-  }
-  return 0;
-}
-
-/* Preferred language first, then English, then the rest in server order. */
-function orderSubtitles(list) {
-  const ui = String(getLang() || "en").toLowerCase();
-  const rank = (track) => {
-    const code = subCode(track);
-    if (code === ui) return 0;
-    if (code === "en") return 1;
-    if (code === "id") return 2;
-    return 3;
-  };
-  return list
-    .map((track, i) => ({ track, i }))
-    .sort((a, b) => rank(a.track) - rank(b.track) || a.i - b.i)
-    .map((entry) => entry.track);
-}
-
-function renderSubtitles(video) {
-  if (state.subKey == null) {
-    const idx = autoPickIndex();
-    if (idx >= 0) {
-      state.subKey = trackKey(state.subtitles[idx]);
-      state.subLang = subCode(state.subtitles[idx]);
-    }
-  }
-  populateCaptionMenu(video);
-  applySubtitle(video);
-}
-
-function populateCaptionMenu(video) {
-  const header = document.getElementById("pui-caption-h");
-  if (header) header.textContent = state.subtitles.length ? `${t("subtitles")} · ${state.subtitles.length}` : t("subtitles");
-  const filter = document.getElementById("pui-sub-filter");
-  renderCaptionList(video, filter ? filter.value : "");
-}
-
-function renderCaptionList(video, query = "") {
-  const list = document.getElementById("pui-caption-list");
-  if (!list) return;
-  const q = String(query || "").trim().toLowerCase();
-  const rows = [`<button class="pui-opt ${state.subKey === "off" ? "active" : ""}" data-cc="-1">${esc(t("off"))}</button>`];
-  let shown = 0;
-
-  state.subtitles.forEach((track, i) => {
-    const label = subLabel(track, i);
-    const detail = subDetail(track);
-    const haystack = `${label} ${detail} ${track.language || ""} ${track.lang || ""} ${track.release || ""}`.toLowerCase();
-    if (q && !haystack.includes(q)) return;
-    shown++;
-    const active = state.subKey === trackKey(track);
-    rows.push(
-      `<button class="pui-opt ${active ? "active" : ""}" data-cc="${i}" title="${esc(detail || label)}">
-        <span class="pui-opt-title">${esc(label)}${track.hi ? ' <em class="pui-sub-tag">HI</em>' : ""}</span>
-        ${detail ? `<span class="pui-opt-sub">${esc(detail)}</span>` : ""}
-      </button>`,
-    );
-  });
-
-  if (!shown) rows.push(`<div class="pui-sub-empty">${esc(t("noSubtitles"))}</div>`);
-  list.innerHTML = rows.join("");
-  list.querySelectorAll("[data-cc]").forEach((btn) => {
-    btn.addEventListener("click", () => chooseSubtitle(video, Number(btn.dataset.cc)));
-  });
-}
-
-function chooseSubtitle(video, idx) {
-  const track = idx >= 0 ? state.subtitles[idx] : null;
-  state.subUserPick = true;
-  state.subKey = track ? trackKey(track) : "off";
-  state.subLang = track ? subCode(track) : "off";
-  applySubtitle(video);
-  const filter = document.getElementById("pui-sub-filter");
-  renderCaptionList(video, filter ? filter.value : "");
-}
-
-async function loadExternalSubs() {
-  const video = document.getElementById("video");
-  if (!video || !state.detail) return;
-  const reqId = ++state.subReq;
-  const d = state.detail;
-  const params = { tmdbId: d.tmdbId, mediaType: d.mediaType, imdbId: d.imdbId || "" };
-  if (d.mediaType === "tv") { params.season = state.season; params.episode = state.episode; }
-  let list = [];
-  try {
-    const res = await api.subtitles(params);
-    list = (res.subtitles || []).filter((s) => s && s.url);
-  } catch { return; }
-  if (reqId !== state.subReq || !list.length) return;
-
-  const seen = new Set();
-  const merged = [];
-  for (const track of [...list, ...state.subtitles]) {
-    const key = trackKey(track);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    merged.push(track);
-  }
-  if (merged.length === state.subtitles.length) return;
-  state.subtitles = orderSubtitles(merged);
-  if (!state.subUserPick) {
-    state.subKey = null;
-    state.subLang = null;
-  }
-  renderSubtitles(video);
-}
-
-function playSource(url, quality, resume = false) {
+function playSource(url, quality, { resumeAt = 0, notify = true } = {}) {
   const video = document.getElementById("video");
   if (!video) return;
-  const wasTime = !resume ? video.currentTime || 0 : video.currentTime || 0;
+  cancelNextUp();
+  state.switching = true;
+  state.started = false;
   destroyHls();
   video.removeAttribute("src");
-  video.innerHTML = "";
-  renderSubtitles(video);
+  try {
+    video.load();
+  } catch {
+    /* teardown only */
+  }
 
   const isHls = /\.m3u8(\?|$)/i.test(url);
   const proxied = proxyUrl(url);
+
+  const seekResume = () => {
+    if (!(resumeAt > 1)) return;
+    if (video.readyState < 1) {
+      video.addEventListener("loadedmetadata", seekResume, { once: true });
+      return;
+    }
+    const duration = video.duration;
+    if (Number.isFinite(duration) && resumeAt >= duration - 5) return;
+    try {
+      video.currentTime = resumeAt;
+    } catch {
+      return;
+    }
+    state.resumedFrom = resumeAt;
+    paintHeader();
+    if (notify) toast(`${t("resumedAt")} ${fmtTime(resumeAt)}`);
+  };
+
+  const markReady = () => {
+    state.switching = false;
+    state.started = true;
+    overlay("clear");
+    seekResume();
+    state.ui?.showControls(video.paused);
+    video.play().catch(() => {
+      setPlayIcons(true);
+      state.ui?.showControls(true);
+    });
+  };
+
+  overlay("loading", `${state.providerName || ""} ${String(quality || "auto").toUpperCase()}`.trim());
+
   if (isHls && window.Hls && window.Hls.isSupported()) {
     const hls = new window.Hls({ maxBufferLength: 30, enableWorker: true });
     state.hls = hls;
+    let recovered = false;
     hls.loadSource(proxied);
     hls.attachMedia(video);
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-      overlay("clear");
-      if (wasTime > 1) video.currentTime = wasTime;
-      video.play().catch(() => { /* autoplay blocked */ });
+      markReady();
     });
     hls.on(window.Hls.Events.ERROR, (_evt, data) => {
       if (!data.fatal) return;
-      overlay("error", `Playback error: ${data.details || data.type}`);
+      if (data.type === window.Hls?.ErrorTypes?.MEDIA_ERROR && !recovered) {
+        recovered = true;
+        try {
+          hls.recoverMediaError();
+          return;
+        } catch {
+          /* fall through to failover */
+        }
+      }
+      failover();
     });
   } else if (isHls && video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = proxied;
-    video.addEventListener("loadedmetadata", () => overlay("clear"), { once: true });
-    video.play().catch(() => { /* autoplay blocked */ });
+    video.addEventListener("loadedmetadata", markReady, { once: true });
   } else {
     video.src = proxied;
-    video.addEventListener("loadeddata", () => overlay("clear"), { once: true });
-    video.play().catch(() => { /* autoplay blocked */ });
+    video.addEventListener("loadeddata", markReady, { once: true });
   }
-
-  overlay("loading", `Quality ${quality || "auto"}`);
-  setTimeout(() => {
-    if (video.readyState >= 2) overlay("clear");
-  }, 4000);
 
   document.getElementById("watch-title").textContent = state.detail?.title || "";
   paintHeader();
   attachProgress();
+  setTimeout(() => {
+    if (video.readyState >= 2 && !state.switching && state.started) overlay("clear");
+  }, 5000);
 }
 
 function attachProgress() {
@@ -919,12 +1652,22 @@ function attachProgress() {
         progress: video.currentTime / duration,
         seconds: Math.round(video.currentTime),
       })
-      .catch(() => { /* offline tolerant */ });
+      .catch(() => {
+        /* offline tolerant */
+      });
   });
-  video.addEventListener("ended", () => {
-    if (state.detail?.mediaType === "tv") goEpisode(state.season, state.episode + 1);
+  video.addEventListener("ended", async () => {
+    if (state.detail?.mediaType !== "tv") return;
+    const target = await nextTarget();
+    if (!target) {
+      toast(t("lastEpisode"));
+      return;
+    }
+    state.nextTarget = target;
+    showNextUp(target);
   });
   video.addEventListener("error", () => {
-    if (video.src) overlay("error", "Stream rejected by the browser. Try another server.");
+    if (state.switching || !state.started) return;
+    failover();
   });
 }

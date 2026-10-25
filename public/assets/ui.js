@@ -26,6 +26,16 @@ const STRINGS = {
     needAccount: "New to Tontonix?", haveAccount: "Already have an account?",
     invalidCreds: "Wrong email or password.", genericError: "Something went wrong. Try again.",
     watchNow: "Watch now", up: "Up", down: "Down",
+    server: "Server", switchingServer: "Server failed. Switching to another one...",
+    serverFailed: "Server failed", nextIn: "Next episode in", playNow: "Play now", cancel: "Cancel",
+    startOver: "Start over", resumedAt: "Resumed at", lastEpisode: "No next episode available",
+    subtitleDelay: "Subtitle delay", subtitleStyle: "Subtitle style", background: "Background", outline: "Outline",
+    font: "Font", opacity: "Opacity", uploadSubtitle: "Upload subtitle", downloadSubtitle: "Download VTT",
+    subtitleAdded: "Subtitle loaded", subtitleFailed: "Subtitle unavailable", noSubtitleLoaded: "No subtitle selected",
+    bgNone: "None", bgSoft: "Soft", bgSolid: "Solid", outlineNone: "None", outlineThin: "Thin", outlineThick: "Thick",
+    fontDefault: "Default", fontSans: "Sans", fontSerif: "Serif", fontMono: "Mono",
+    volume: "Volume", mute: "Mute", unmute: "Unmute", pip: "Picture in picture", cast: "Cast",
+    customSubtitle: "Custom", secondsShort: "s",
   },
   id: {
     home: "Beranda", movies: "Film", shows: "Serial", anime: "Anime", search: "Cari",
@@ -54,6 +64,16 @@ const STRINGS = {
     needAccount: "Baru di Tontonix?", haveAccount: "Sudah punya akun?",
     invalidCreds: "Email atau kata sandi salah.", genericError: "Ada masalah. Coba lagi.",
     watchNow: "Tonton sekarang", up: "Suka", down: "Kurang",
+    server: "Server", switchingServer: "Server gagal. Pindah ke server lain...",
+    serverFailed: "Server gagal", nextIn: "Episode berikutnya dalam", playNow: "Putar sekarang", cancel: "Batal",
+    startOver: "Dari awal", resumedAt: "Dilanjutkan dari", lastEpisode: "Tidak ada episode berikutnya",
+    subtitleDelay: "Jeda subtitle", subtitleStyle: "Gaya subtitle", background: "Latar", outline: "Garis tepi",
+    font: "Font", opacity: "Opasitas", uploadSubtitle: "Unggah subtitle", downloadSubtitle: "Unduh VTT",
+    subtitleAdded: "Subtitle dimuat", subtitleFailed: "Subtitle tidak tersedia", noSubtitleLoaded: "Belum ada subtitle dipilih",
+    bgNone: "Tanpa", bgSoft: "Lembut", bgSolid: "Padat", outlineNone: "Tanpa", outlineThin: "Tipis", outlineThick: "Tebal",
+    fontDefault: "Bawaan", fontSans: "Sans", fontSerif: "Serif", fontMono: "Mono",
+    volume: "Volume", mute: "Bisukan", unmute: "Nyalakan suara", pip: "Mode gambar dalam gambar", cast: "Cast",
+    customSubtitle: "Kustom", secondsShort: "d",
   },
 };
 
@@ -111,20 +131,23 @@ export function metaLine(item, { showType = true } = {}) {
   return bits.join('<span class="sep"></span>');
 }
 
-export function card(item, { hoverName = true } = {}) {
+export function card(item, { hoverName = true, progress = 0, href = "" } = {}) {
   const title = esc(item.title);
-  const href = `/${item.mediaType === "tv" ? "tv" : "movie"}/${item.id}`;
-  return `<a class="card" href="${href}" aria-label="${title}">
+  const link = href || `/${item.mediaType === "tv" ? "tv" : "movie"}/${item.id}`;
+  const pct = Math.min(100, Math.max(0, Number(progress) * 100 || 0));
+  const bar = pct > 0 ? `<span class="card-progress"><span style="width:${pct.toFixed(1)}%"></span></span>` : "";
+  return `<a class="card" href="${esc(link)}" aria-label="${title}">
     <div class="card-media">
       ${item.poster ? `<img loading="lazy" src="${item.poster}" alt="${title} poster" />` : `<div class="skeleton" style="height:100%"></div>`}
       ${item.uhd ? `<span class="card-badge badge uhd">4K</span>` : ""}
+      ${bar}
       ${hoverName ? `<div class="card-hover"><div class="card-name">${title}</div><div class="card-meta">${metaLine(item)}</div></div>` : ""}
     </div>
   </a>`;
 }
 
-export function cardWithInfo(item) {
-  return `<div class="card-block">${card(item, { hoverName: false })}
+export function cardWithInfo(item, opts = {}) {
+  return `<div class="card-block">${card(item, { ...opts, hoverName: false })}
     <div class="card-info"><div class="name">${esc(item.title)}</div><div class="meta">${metaLine(item)}</div></div>
   </div>`;
 }
@@ -135,7 +158,11 @@ export function topCard(item, index) {
 
 export function row(title, items, { top10 = false, href = null, id = "" } = {}) {
   if (!items || !items.length) return "";
-  const cells = top10 ? items.slice(0, 10).map((item, i) => topCard(item, i)).join("") : items.map((item) => card(item)).join("");
+  const cells = top10
+    ? items.slice(0, 10).map((item, i) => topCard(item, i)).join("")
+    : items
+        .map((item) => card(item, { href: item.href || "", progress: item.progress || 0 }))
+        .join("");
   return `<section class="row" ${id ? `data-row="${id}"` : ""}>
     <div class="row-head">
       <h2 class="row-title">${href ? `<a href="${href}">${esc(title)}</a>` : esc(title)}</h2>

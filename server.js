@@ -341,6 +341,18 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, await subtitlesApi.search(q));
   }
 
+  if (p === "/v1/subtitles/convert" && method === "POST") {
+    const body = await readBody(req, 4 * 1024 * 1024);
+    const text = String(body.text || "");
+    if (!text.trim()) throw Object.assign(new Error("text required"), { status: 400 });
+    const vtt = subtitlesApi.toVtt(Buffer.from(text, "utf8"), {
+      format: String(body.format || ""),
+      encoding: String(body.encoding || ""),
+    });
+    if (!vtt) return sendJson(res, 415, { error: "unsupported subtitle format" });
+    return sendJson(res, 200, { vtt });
+  }
+
   if (p === "/v1/trailer" && method === "GET") {
     if (!q.imdbId) throw Object.assign(new Error("imdbId required"), { status: 400 });
     try {

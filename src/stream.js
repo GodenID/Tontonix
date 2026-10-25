@@ -39,19 +39,32 @@ function headers() {
   };
 }
 
-async function getSeed(mediaId, { force = false } = {}) {
-  const hit = seedCache.get(String(mediaId));
-  if (!force && hit && hit.expires - 3000 > Date.now()) return hit.seed;
+const seedInflight = new Map();
 
-  const res = await fetch(`${config.streamApi}/seed?mediaId=${encodeURIComponent(mediaId)}`, {
-    headers: headers(),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) throw Object.assign(new Error(`seed ${res.status}`), { status: res.status });
-  const json = await res.json();
-  if (!json.seed) throw Object.assign(new Error("seed missing in response"), { status: 502 });
-  seedCache.set(String(mediaId), { seed: json.seed, expires: Date.now() + (json.ttlMs || 30000) });
-  return json.seed;
+async function getSeed(mediaId, { force = false } = {}) {
+  const key = String(mediaId);
+  const hit = seedCache.get(key);
+  if (!force && hit && hit.expires - 3000 > Date.now()) return hit.seed;
+  if (seedInflight.has(key)) return seedInflight.get(key);
+
+  const task = (async () => {
+    const res = await fetch(`${config.streamApi}/seed?mediaId=${encodeURIComponent(mediaId)}`, {
+      headers: headers(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw Object.assign(new Error(`seed ${res.status}`), { status: res.status });
+    const json = await res.json();
+    if (!json.seed) throw Object.assign(new Error("seed missing in response"), { status: 502 });
+    seedCache.set(key, { seed: json.seed, expires: Date.now() + (json.ttlMs || 30000) });
+    return json.seed;
+  })();
+
+  seedInflight.set(key, task);
+  try {
+    return await task;
+  } finally {
+    seedInflight.delete(key);
+  }
 }
 
 function buildQuery(provider, req) {
@@ -125,18 +138,20 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
   return value;
 }
 
-/** Try providers in order until one yields sources. */
-async function resolveAll(req, { limit = 6 } = {}) {
-  const results = [];
-  for (const provider of PROVIDERS.slice(0, limit)) {
-    try {
-      const value = await resolveProvider(provider.id, req);
-      if (value.sources.length) results.push(value);
-    } catch {
-      /* provider down: keep walking */
-    }
-  }
-  return results;
+/** Resolve several providers in parallel, keeping lineup order in the result. */
+async function resolveAll(req, { limit = 6, force = false } = {}) {
+  const count = Math.max(1, Math.min(PROVIDERS.length, Number(limit) || 6));
+  const settled = await Promise.all(
+    PROVIDERS.slice(0, count).map(async (provider) => {
+      try {
+        const value = await resolveProvider(provider.id, req, { force });
+        return value.sources.length ? value : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return settled.filter(Boolean);
 }
 
 module.exports = { PROVIDERS, providerById, resolveProvider, resolveAll, getSeed };

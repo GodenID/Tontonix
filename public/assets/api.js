@@ -59,6 +59,8 @@ export const api = {
   sources: (params) => request(`/v1/sources?${new URLSearchParams(params)}`),
   sourcesAll: (params) => request(`/v1/sources/all?${new URLSearchParams(params)}`),
   subtitles: (params) => request(`/v1/subtitles?${new URLSearchParams(params)}`),
+  convertSubtitle: (text, format = "") =>
+    request("/v1/subtitles/convert", { method: "POST", body: { text, format } }),
   votes: (tmdbId, mediaType) => request(`/v1/votes?tmdbId=${tmdbId}&mediaType=${mediaType}`),
   vote: (tmdbId, mediaType, direction) =>
     request("/v1/votes", { method: "POST", body: { tmdbId, mediaType, direction }, auth: true }),
