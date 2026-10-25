@@ -29,6 +29,7 @@ const providerById = new Map(PROVIDERS.map((p) => [p.id, p]));
 
 const seedCache = new Map();
 const sourceCache = new Map();
+const failCache = new Map();
 
 function headers() {
   return {
@@ -49,10 +50,12 @@ async function getSeed(mediaId, { force = false } = {}) {
   if (seedInflight.has(key)) return seedInflight.get(key);
 
   const task = (async () => {
-    const res = await fetch(`${config.streamApi}/seed?mediaId=${encodeURIComponent(mediaId)}`, {
-      headers: headers(),
-      signal: AbortSignal.timeout(10000),
-    });
+    const url = `${config.streamApi}/seed?mediaId=${encodeURIComponent(mediaId)}`;
+    let res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(10000) });
+    if (res.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(10000) });
+    }
     if (!res.ok) throw Object.assign(new Error(`seed ${res.status}`), { status: res.status });
     const json = await res.json();
     if (!json.seed) throw Object.assign(new Error("seed missing in response"), { status: 502 });
@@ -96,17 +99,34 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
   const hit = sourceCache.get(key);
   if (!force && hit && hit.expires > Date.now()) return hit.value;
 
-  const url = `${config.streamApi}/${provider.id}/sources?${buildQuery(provider, req)}`;
+  const miss = failCache.get(key);
+  if (miss && miss.expires > Date.now()) throw Object.assign(new Error(miss.message), { status: miss.status });
+
   const run = async () => {
-    const seed = await getSeed(req.tmdbId, { force });
+    // Seed is shared by every provider for a title. Never bypass its cache on a
+    // provider refresh: the gateway rate-limits /seed and a 401 retry refreshes it.
+    const seed = await getSeed(req.tmdbId);
     const query = buildQuery(provider, req);
     query.set("seed", seed);
-    const res = await fetch(`${config.streamApi}/${provider.id}/sources?${query}`, {
-      headers: headers(),
-      signal: AbortSignal.timeout(15000),
-    });
+    const url = `${config.streamApi}/${provider.id}/sources?${query}`;
+    let res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(15000) });
+    if (res.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(15000) });
+    }
     if (res.status === 401) throw Object.assign(new Error("seed rejected"), { status: 401 });
-    if (!res.ok) throw Object.assign(new Error(`provider ${provider.id} ${res.status}`), { status: res.status });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      let detail = "";
+      try {
+        const json = JSON.parse(body);
+        detail = String(json.message || json.error || "").trim();
+      } catch {
+        detail = "";
+      }
+      const status = res.status >= 500 || res.status === 403 ? 502 : res.status;
+      throw Object.assign(new Error(detail || `provider ${provider.id} ${res.status}`), { status });
+    }
     const payload = await res.text();
     return JSON.parse(decryptPayload(payload, seed, req.tmdbId));
   };
@@ -127,6 +147,10 @@ async function resolveProvider(providerId, req, { force = false } = {}) {
     stats.record(providerId, { ok: true, ms: Date.now() - startedAt, empty: !(result.sources || []).length });
   } catch (err) {
     stats.record(providerId, { ok: false, ms: Date.now() - startedAt, error: err.message });
+    if (err.status === 502 || err.status === 404) {
+      failCache.set(key, { message: err.message, status: err.status, expires: Date.now() + 45000 });
+      if (failCache.size > 500) failCache.delete(failCache.keys().next().value);
+    }
     throw err;
   }
 
@@ -174,6 +198,7 @@ function cacheStats() {
   return {
     seed: { total: seedCache.size, fresh: countFresh(seedCache) },
     sources: { total: sourceCache.size, fresh: countFresh(sourceCache), ttlMs: config.streamCacheTtlMs },
+    failed: failCache.size,
     providers: stats.snapshot(),
   };
 }

@@ -130,6 +130,7 @@ const state = {
   currentQuality: "",
   switchAt: 0,
   lastReport: "",
+  lastResolveError: "",
 };
 
 function providerIcon(p) {
@@ -1571,6 +1572,7 @@ export async function watchPage(ctx, params) {
   state.currentQuality = "";
   state.switchAt = 0;
   state.lastReport = "";
+  state.lastResolveError = "";
 
   document.getElementById("app").innerHTML = `<div class="watch-page"><div class="watch-top"><div class="watch-title">Loading…</div></div></div>`;
 
@@ -1802,7 +1804,7 @@ async function resolveAuto({ resumeAt = state.resumeSeconds || 0 } = {}) {
   }
 
   const ok = await tryNext({ resumeAt });
-  if (!ok) overlay("error", t("streamError"));
+  if (!ok) overlay("error", state.lastResolveError || t("streamError"));
 }
 
 function applyProvider(value, { resumeAt = 0, reason = "", notify = true } = {}) {
@@ -1838,10 +1840,14 @@ async function tryNext({ resumeAt = 0, reason = "", notify = true, fresh = false
       const cached = fresh ? null : state.pool.get(id);
       const value = cached && cached.sources?.length ? cached : await api.sources({ ...requestParams(id), force: "1" });
       const sources = (value.sources || []).filter((source) => source && source.url);
-      if (!sources.length) continue;
+      if (!sources.length) {
+        state.lastResolveError = t("streamError");
+        continue;
+      }
       applyProvider({ ...value, provider: value.provider || id }, { resumeAt, reason, notify });
       return true;
-    } catch {
+    } catch (err) {
+      if (err && err.message) state.lastResolveError = err.message;
       /* server down: keep walking */
     }
   }
@@ -1858,7 +1864,7 @@ async function failover() {
   overlay("loading", t("switchingServer"));
   try {
     const ok = await tryNext({ resumeAt: at, reason: t("serverFailed"), notify: false, fresh: true });
-    if (!ok) overlay("error", t("streamError"));
+    if (!ok) overlay("error", state.lastResolveError || t("streamError"));
   } finally {
     state.failingOver = false;
   }
